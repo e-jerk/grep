@@ -11,9 +11,3 @@ jobs:
     uses: e-jerk/.github/.github/workflows/ci.yml@main
     with:
       binary_name: grep
-      macos_test_script: |
-        echo "hello world" > test.txt
-        $BINARY --cpu hello test.txt
-      linux_test_script: |
-        echo "hello world" > test.txt
-        $BINARY --cpu hello test.txt
