@@ -1,0 +1,10 @@
+services:
+  grep:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY_NAME: grep
+    volumes:
+      - .:/workdir:ro
+    working_dir: /workdir

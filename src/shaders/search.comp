@@ -1,0 +1,214 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ============================================================================
+// GPU-Accelerated String Search for grep (Vulkan/GLSL)
+// Optimized with uvec4 vector types for SIMD operations
+// ============================================================================
+
+#include "string_ops.glsl"
+
+const uint MAX_RESULTS = 1000000u;
+const uint FLAG_CASE_INSENSITIVE = 1u;
+const uint FLAG_WORD_BOUNDARY = 2u;
+const uint FLAG_INVERT_MATCH = 16u;
+
+struct SearchConfig {
+    uint text_len;
+    uint pattern_len;
+    uint num_patterns;
+    uint flags;
+    uint positions_per_thread;
+    uint _pad1;
+    uint _pad2;
+    uint _pad3;
+};
+
+struct MatchResult {
+    uint position;
+    uint pattern_idx;
+    uint match_len;
+    uint line_start;
+};
+
+// Buffer bindings
+layout(std430, binding = 0) readonly buffer TextBuffer { uint text_data[]; };
+layout(std430, binding = 1) readonly buffer PatternBuffer { uint pattern_data[]; };
+layout(std430, binding = 2) readonly buffer SkipTableBuffer { uint skip_table_data[64]; };
+layout(std430, binding = 3) readonly buffer ConfigBuffer { SearchConfig config; };
+layout(std430, binding = 4) writeonly buffer ResultBuffer { MatchResult results[]; };
+layout(std430, binding = 5) buffer CounterBuffer { uint result_count; uint total_matches; };
+
+// Buffer access functions (specific to this shader's buffer layout)
+
+uint get_byte(uint pos, bool from_pattern) {
+    uint word_idx = pos >> 2u;
+    uint byte_idx = pos & 3u;
+    uint word = from_pattern ? pattern_data[word_idx] : text_data[word_idx];
+    return (word >> (byte_idx << 3u)) & 0xFFu;
+}
+
+uint get_word_at(uint byte_pos) {
+    uint word_idx = byte_pos >> 2u;
+    uint byte_offset = byte_pos & 3u;
+
+    if (byte_offset == 0u) {
+        return text_data[word_idx];
+    }
+
+    uint w0 = text_data[word_idx];
+    uint w1 = text_data[word_idx + 1u];
+    uint shift = byte_offset << 3u;
+    return (w0 >> shift) | (w1 << (32u - shift));
+}
+
+uint get_pattern_word_at(uint byte_pos) {
+    uint word_idx = byte_pos >> 2u;
+    uint byte_offset = byte_pos & 3u;
+
+    if (byte_offset == 0u) {
+        return pattern_data[word_idx];
+    }
+
+    uint w0 = pattern_data[word_idx];
+    uint w1 = pattern_data[word_idx + 1u];
+    uint shift = byte_offset << 3u;
+    return (w0 >> shift) | (w1 << (32u - shift));
+}
+
+uint get_skip(uint c) {
+    uint word_idx = c >> 2u;
+    uint byte_idx = c & 3u;
+    return (skip_table_data[word_idx] >> (byte_idx << 3u)) & 0xFFu;
+}
+
+// Common functions from string_ops.glsl:
+// to_lower, to_lower_word, char_match, match_word, match_uvec4, is_word_char, is_newline
+
+// Vectorized pattern matching
+bool match_at_position(uint pos, uint pattern_len, bool case_insensitive) {
+    if (pos + pattern_len > config.text_len) return false;
+
+    uint remaining = pattern_len;
+    uint offset = 0u;
+
+    // Process 16 bytes (4 words) at a time using uvec4
+    while (remaining >= 16u) {
+        uvec4 text_words = uvec4(
+            get_word_at(pos + offset),
+            get_word_at(pos + offset + 4u),
+            get_word_at(pos + offset + 8u),
+            get_word_at(pos + offset + 12u)
+        );
+        uvec4 pattern_words = uvec4(
+            get_pattern_word_at(offset),
+            get_pattern_word_at(offset + 4u),
+            get_pattern_word_at(offset + 8u),
+            get_pattern_word_at(offset + 12u)
+        );
+
+        if (!match_uvec4(text_words, pattern_words, case_insensitive)) {
+            return false;
+        }
+        offset += 16u;
+        remaining -= 16u;
+    }
+
+    // Process 4 bytes at a time
+    while (remaining >= 4u) {
+        uint text_word = get_word_at(pos + offset);
+        uint pattern_word = get_pattern_word_at(offset);
+
+        if (!match_word(text_word, pattern_word, case_insensitive)) {
+            return false;
+        }
+        offset += 4u;
+        remaining -= 4u;
+    }
+
+    // Process remaining bytes one at a time
+    while (remaining > 0u) {
+        uint tc = get_byte(pos + offset, false);
+        uint pc = get_byte(offset, true);
+        if (case_insensitive) {
+            tc = to_lower(tc);
+            pc = to_lower(pc);
+        }
+        if (tc != pc) return false;
+        offset++;
+        remaining--;
+    }
+
+    return true;
+}
+
+bool check_word_boundary(uint match_start, uint match_end) {
+    if (match_start > 0u && is_word_char(get_byte(match_start - 1u, false))) return false;
+    if (match_end < config.text_len && is_word_char(get_byte(match_end, false))) return false;
+    return true;
+}
+
+uint find_line_start(uint pos) {
+    if (pos == 0u) return 0u;
+    uint i = pos - 1u;
+    while (i > 0u && !is_newline(get_byte(i, false))) i--;
+    if (is_newline(get_byte(i, false)) && i < pos) return i + 1u;
+    return i;
+}
+
+void main() {
+    uint tid = gl_GlobalInvocationID.x;
+    uint num_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    uint text_len = config.text_len;
+    uint pattern_len = config.pattern_len;
+    uint flags = config.flags;
+
+    if (pattern_len == 0u || text_len < pattern_len) return;
+
+    bool case_insensitive = (flags & FLAG_CASE_INSENSITIVE) != 0u;
+    bool word_boundary = (flags & FLAG_WORD_BOUNDARY) != 0u;
+    bool invert = (flags & FLAG_INVERT_MATCH) != 0u;
+
+    uint chunk_size = (text_len + num_threads - 1u) / num_threads;
+    uint start_pos = tid * chunk_size;
+    uint end_pos = min(start_pos + chunk_size + pattern_len - 1u, text_len);
+
+    if (start_pos >= text_len) return;
+
+    uint pos = start_pos;
+
+    while (pos + pattern_len <= end_pos) {
+        uint last_text_char = get_byte(pos + pattern_len - 1u, false);
+        uint last_pattern_char = get_byte(pattern_len - 1u, true);
+
+        if (case_insensitive) {
+            last_text_char = to_lower(last_text_char);
+            last_pattern_char = to_lower(last_pattern_char);
+        }
+
+        if (last_text_char == last_pattern_char) {
+            if (match_at_position(pos, pattern_len, case_insensitive)) {
+                bool valid = true;
+                if (word_boundary) valid = check_word_boundary(pos, pos + pattern_len);
+
+                if (valid != invert) {
+                    uint idx = atomicAdd(result_count, 1u);
+                    if (idx < MAX_RESULTS) {
+                        results[idx].position = pos;
+                        results[idx].pattern_idx = 0u;
+                        results[idx].match_len = pattern_len;
+                        results[idx].line_start = find_line_start(pos);
+                    }
+                    atomicAdd(total_matches, 1u);
+                }
+            }
+        }
+
+        uint skip_char = get_byte(pos + pattern_len - 1u, false);
+        uint skip = get_skip(skip_char);
+        pos += max(skip, 1u);
+    }
+}
