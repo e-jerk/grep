@@ -7,7 +7,7 @@ A high-performance `grep` replacement that uses GPU acceleration via Metal (macO
 - **GPU-Accelerated Search**: Parallel pattern matching on Metal and Vulkan compute shaders
 - **SIMD-Optimized CPU**: Vectorized Boyer-Moore-Horspool with 16/32-byte SIMD operations
 - **Auto-Selection**: Intelligent backend selection based on file size, pattern complexity, and hardware tier
-- **GNU Compatible**: Supports common grep flags (`-i`, `-w`, `-v`, `-F`)
+- **GNU Compatible**: Full support for common grep flags including context lines, recursive search, and color output
 
 ## Installation
 
@@ -28,6 +28,18 @@ grep -w "test" source.c
 # Invert match (show non-matching lines)
 grep -v "debug" output.log
 
+# Context lines (before, after, both)
+grep -B 3 "error" log.txt      # 3 lines before
+grep -A 3 "error" log.txt      # 3 lines after
+grep -C 2 "error" log.txt      # 2 lines before and after
+
+# Recursive search
+grep -r "TODO" src/
+grep -rn "FIXME" .              # With line numbers
+
+# Color output
+grep --color=always "pattern" file.txt
+
 # Force specific backend
 grep --gpu "TODO" *.py
 grep --metal "FIXME" src/
@@ -38,6 +50,30 @@ grep --cpu "pattern" file.txt
 grep -V "pattern" largefile.txt
 ```
 
+## GNU Feature Compatibility
+
+| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
+|---------|:-------------:|:-----------:|:-----:|:------:|--------|
+| Basic pattern matching | ✓ | ✓ | ✓ | ✓ | Native |
+| `-i` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
+| `-w` word boundary | ✓ | ✓ | ✓ | ✓ | Native |
+| `-v` invert match | ✓ | ✓ | ✓ | ✓ | Native |
+| `-F` fixed strings | ✓ | ✓ | ✓ | ✓ | Native |
+| `-e` multiple patterns | ✓ | ✓ | — | — | Native (CPU) |
+| `-n` line numbers | ✓ | ✓ | — | — | Native |
+| `-c` count only | ✓ | ✓ | — | — | Native |
+| `-l` files with matches | ✓ | ✓ | — | — | Native |
+| `-L` files without match | ✓ | ✓ | — | — | Native |
+| `-q` quiet mode | ✓ | ✓ | — | — | Native |
+| `-o` only matching | ✓ | ✓ | — | — | Native |
+| `-A/-B/-C` context lines | ✓ | ✓ | — | — | **Native** |
+| `-r` recursive search | ✓ | ✓ | — | — | **Native** |
+| `--color` output | ✓ | ✓ | — | — | **Native** |
+| `-E` extended regex | — | ✓ | — | — | GNU fallback |
+| `-P` Perl regex | — | ✓ | — | — | GNU fallback |
+
+**Test Coverage**: 42/42 GNU compatibility tests passing
+
 ## Options
 
 | Flag | Description |
@@ -46,6 +82,18 @@ grep -V "pattern" largefile.txt
 | `-w, --word-regexp` | Match whole words only |
 | `-v, --invert-match` | Invert match (show non-matching lines) |
 | `-F, --fixed-strings` | Treat pattern as fixed string |
+| `-n, --line-number` | Print line numbers |
+| `-c, --count` | Print only count of matching lines |
+| `-l, --files-with-matches` | Print only filenames with matches |
+| `-L, --files-without-match` | Print only filenames without matches |
+| `-q, --quiet, --silent` | Quiet mode (exit status only) |
+| `-o, --only-matching` | Print only matching parts |
+| `-e PATTERN` | Use PATTERN for matching |
+| `-A NUM` | Print NUM lines after match |
+| `-B NUM` | Print NUM lines before match |
+| `-C NUM` | Print NUM lines before and after match |
+| `-r, --recursive` | Recursive directory search |
+| `--color[=WHEN]` | Highlight matches (always/never/auto) |
 | `-V, --verbose` | Show timing and backend information |
 
 ## Backend Selection
@@ -55,12 +103,13 @@ grep -V "pattern" largefile.txt
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
 | `--cpu` | Force CPU backend |
+| `--gnu` | Force GNU grep backend |
 | `--metal` | Force Metal backend (macOS only) |
 | `--vulkan` | Force Vulkan backend |
 
 ## Architecture & Optimizations
 
-### CPU Implementation (`src/cpu.zig`)
+### CPU Implementation (`src/cpu_optimized.zig`)
 
 The CPU backend uses a SIMD-optimized Boyer-Moore-Horspool algorithm:
 
@@ -80,9 +129,20 @@ The CPU backend uses a SIMD-optimized Boyer-Moore-Horspool algorithm:
 - `findNextNewlineSIMD()`: Forward 32-byte newline search
 - `searchAllLines()`: 32-byte chunked newline counting for empty patterns
 
-**Word Boundary Detection**:
-- `checkWordBoundary()`: Validates alphanumeric/underscore boundaries
-- `isWordChar()`: Inline character classification
+**Context Lines Implementation**:
+- `outputWithContext()`: Builds line index, computes context ranges, merges overlapping groups
+- Outputs `--` separator between non-adjacent context groups
+- Supports combined `-n` with context for numbered output
+
+**Recursive Search**:
+- `processDirectory()`: Recursive directory walker with file type filtering
+- Processes files in parallel where beneficial
+- Supports combined flags (`-rn`, `-ri`, `-rc`, `-rl`)
+
+**Color Output**:
+- ANSI escape codes: `\033[01;31m` for match highlighting
+- `--color=always|never|auto` modes
+- Works with `-o` (only matching) mode
 
 ### GPU Implementation
 
@@ -112,13 +172,14 @@ The `e_jerk_gpu` library scores workloads based on:
 
 ## Performance
 
-| Workload | GPU Speedup |
-|----------|-------------|
-| Single character patterns | ~10-15x |
-| Case-insensitive (`-i`) | ~8x |
-| Word boundary (`-w`) | ~7x |
-| Short patterns (2-4 chars) | ~5x |
-| Long patterns (8+ chars) | ~2x |
+| Workload | CPU | GPU | Speedup |
+|----------|-----|-----|---------|
+| Single character patterns | 128 MB/s | 2.2 GB/s | **17.4x** |
+| Case-insensitive (`-i`) | 223 MB/s | 2.5 GB/s | **11.0x** |
+| Word boundary (`-w`) | 482 MB/s | 3.8 GB/s | **8.0x** |
+| Common words (`the`) | 335 MB/s | 2.4 GB/s | **7.2x** |
+| Long patterns (8+ chars) | 1.3 GB/s | 3.7 GB/s | **2.7x** |
+| Sparse matches | 3.9 GB/s | 6.3 GB/s | **1.6x** |
 
 *Results measured on Apple M1 Max with 50MB test files.*
 
@@ -135,9 +196,17 @@ zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test      # Unit tests
-zig build smoke     # Integration tests
+zig build smoke     # Integration tests (GPU verification)
 zig build bench     # Benchmarks
+bash gnu-tests.sh   # GNU compatibility tests (42 tests)
 ```
+
+## Recent Changes
+
+- **Context Lines**: Native `-A`, `-B`, `-C` support with proper group separators
+- **Recursive Search**: Native `-r` flag with combined options (`-rn`, `-ri`, `-rc`, `-rl`)
+- **Color Output**: Native `--color` support with ANSI highlighting
+- **Test Coverage**: 42 GNU compatibility tests passing
 
 ## License
 
