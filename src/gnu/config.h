@@ -1001,7 +1001,14 @@
 #define HAVE_GETOPT_LONG_ONLY 1
 
 /* Define to 1 if you have the `getprogname' function. */
+/* Note: We always define this as 1 and provide our own implementation in gnulib_stubs.c for non-BSD systems */
 #define HAVE_GETPROGNAME 1
+
+/* Declaration for our getprogname implementation (for non-BSD systems) */
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__) && !defined(__NetBSD__)
+const char *getprogname(void);
+void setprogname(const char *name);
+#endif
 
 /* Define to 1 if you have the 'getrlimit' function. */
 #define HAVE_GETRLIMIT 1

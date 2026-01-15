@@ -2,6 +2,7 @@
 
 #include <config.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -240,3 +241,17 @@ void *x2realloc(void *p, size_t *pn) {
 void *x2nrealloc(void *p, size_t *pn, size_t s) {
     return xpalloc(p, pn, 1, -1, s);
 }
+
+/* getprogname - get program name (BSD/macOS function, not available on musl/glibc)
+ * We provide a fallback implementation. */
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__) && !defined(__NetBSD__)
+static const char *_program_name = "grep";
+
+const char *getprogname(void) {
+    return _program_name;
+}
+
+void setprogname(const char *name) {
+    _program_name = name;
+}
+#endif
