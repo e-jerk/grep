@@ -5,12 +5,123 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const is_macos = target.result.os.tag == .macos;
+    const is_linux = target.result.os.tag == .linux;
     const is_native = target.result.os.tag == @import("builtin").os.tag;
 
     // Build options to pass compile-time config to source
     const build_options = b.addOptions();
     build_options.addOption(bool, "is_macos", is_macos);
     const build_options_module = build_options.createModule();
+
+    // GNU grep dependency
+    const gnu_grep = b.dependency("gnu_grep", .{});
+
+    // GNU grep source files
+    const gnu_src_files = &[_][]const u8{
+        "src/dfasearch.c",
+        "src/kwsearch.c",
+        "src/kwset.c",
+        "src/searchutils.c",
+    };
+
+    // Core gnulib files needed for grep search functionality
+    // Note: regex.c includes regex_internal.c, regcomp.c, regexec.c
+    // Excluded: reallocarray.c, rawmemchr.c, memrchr.c, mbslen.c, setlocale_null.c
+    //           (we provide inline implementations in gnulib_compat.h)
+    const gnu_lib_files = &[_][]const u8{
+        "lib/argmatch.c",
+        "lib/c-ctype.c",
+        "lib/c-strcasecmp.c",
+        "lib/c-strncasecmp.c",
+        "lib/dfa.c",
+        "lib/error.c",
+        "lib/exitfail.c",
+        "lib/getprogname.c",
+        "lib/hard-locale.c",
+        "lib/hash.c",
+        "lib/ialloc.c",
+        "lib/localcharset.c",
+        "lib/localeinfo.c",
+        "lib/malloca.c",
+        "lib/mbchar.c",
+        "lib/mbiter.c",
+        "lib/mbscasecmp.c",
+        // "lib/mbslen.c",  // Using inline implementation
+        "lib/mbsstr.c",
+        "lib/mbuiter.c",
+        "lib/memchr.c",
+        "lib/memchr2.c",
+        "lib/mempcpy.c",
+        // "lib/memrchr.c",  // Using inline implementation
+        "lib/obstack.c",
+        "lib/quotearg.c",
+        // "lib/rawmemchr.c",  // Using inline implementation
+        // "lib/reallocarray.c",  // Using inline implementation
+        "lib/regex.c",
+        "lib/safe-read.c",
+        // "lib/setlocale_null.c",  // Using inline implementation
+        "lib/setlocale-lock.c",
+        "lib/striconv.c",
+        "lib/strnlen1.c",
+        // "lib/xalloc-die.c",  // Using our own implementation in gnulib_stubs.c
+        // "lib/xmalloc.c",     // Using our own implementation in gnulib_stubs.c
+    };
+
+    // C compiler flags
+    const c_flags = &[_][]const u8{
+        "-std=gnu11",
+        "-DHAVE_CONFIG_H",
+        "-D_GNU_SOURCE",
+        "-Wno-unused-parameter",
+        "-Wno-sign-compare",
+        "-Wno-implicit-fallthrough",
+        "-Wno-nullability-completeness",
+        "-Wno-nullability-extension",
+        "-Wno-expansion-to-defined",
+        "-Wno-gnu-statement-expression",
+        "-Wno-format",
+        "-fno-strict-aliasing",
+        // Disable UB sanitizer - gnulib obstack uses intentional null pointer arithmetic
+        "-fno-sanitize=undefined",
+    };
+
+    // Helper function to add GNU grep C sources to an artifact
+    const addGnuGrepSources = struct {
+        fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu: *std.Build.Dependency) void {
+            // Add GNU grep source files
+            for (gnu_src_files) |src| {
+                compile.addCSourceFile(.{
+                    .file = gnu.path(src),
+                    .flags = c_flags,
+                });
+            }
+            // Add gnulib source files
+            for (gnu_lib_files) |src| {
+                compile.addCSourceFile(.{
+                    .file = gnu.path(src),
+                    .flags = c_flags,
+                });
+            }
+            // Add our wrapper and stub files
+            compile.addCSourceFile(.{
+                .file = builder.path("src/gnu/gnu_grep_wrapper.c"),
+                .flags = c_flags,
+            });
+            compile.addCSourceFile(.{
+                .file = builder.path("src/gnu/gnulib_stubs.c"),
+                .flags = c_flags,
+            });
+            // Include paths - our config.h first, then gnulib lib, then src
+            compile.addIncludePath(builder.path("src/gnu")); // Our config.h and stubs
+            compile.addIncludePath(gnu.path("lib"));
+            compile.addIncludePath(gnu.path("src"));
+            // Link libc and iconv
+            compile.linkLibC();
+            compile.linkSystemLibrary("iconv");
+        }
+    }.add;
+
+    _ = is_linux;
 
     // e_jerk_gpu library for GPU detection and auto-selection (also provides zigtrait)
     const e_jerk_gpu_dep = b.dependency("e_jerk_gpu", .{});
@@ -32,6 +143,10 @@ pub fn build(b: *std.Build) void {
         .registry = vulkan_headers.path("registry/vk.xml"),
     });
     const vulkan_module = vulkan_dep.module("vulkan-zig");
+
+    // Regex engine
+    const regex_dep = b.dependency("regex", .{});
+    const regex_module = regex_dep.module("regex");
 
     // Shared shader library
     const shaders_common = b.dependency("shaders_common", .{});
@@ -89,11 +204,22 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Create cpu module for reuse
+    // Create cpu module for reuse (optimized SIMD implementation)
     const cpu_module = b.addModule("cpu", .{
-        .root_source_file = b.path("src/cpu.zig"),
+        .root_source_file = b.path("src/cpu_optimized.zig"),
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "regex", .module = regex_module },
+        },
+    });
+
+    // Create cpu_gnu module (GNU grep reference implementation)
+    // Note: cpu_gnu uses cpu_optimized for regex (GNU regex has memory issues with quantifiers)
+    const cpu_gnu_module = b.addModule("cpu_gnu", .{
+        .root_source_file = b.path("src/cpu_gnu.zig"),
+        .imports = &.{
+            .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "cpu_optimized", .module = cpu_module },
         },
     });
 
@@ -111,9 +237,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "cpu_gnu", .module = cpu_gnu_module },
             },
         }),
     });
+
+    // Add GNU grep C sources to main executable (includes wrapper and stubs)
+    addGnuGrepSources(exe, b, gnu_grep);
 
     // Platform-specific linking
     if (is_macos) {
@@ -121,6 +251,7 @@ pub fn build(b: *std.Build) void {
             exe.linkFramework("Foundation");
             exe.linkFramework("Metal");
             exe.linkFramework("QuartzCore");
+            exe.linkFramework("CoreFoundation");
 
             // MoltenVK from Homebrew for Vulkan on macOS
             exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
@@ -145,12 +276,14 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Benchmark executable
+    // Note: Uses ReleaseSafe instead of ReleaseFast because the GNU grep C code
+    // has undefined behavior that manifests as crashes under aggressive optimizations
     const bench_exe = b.addExecutable(.{
         .name = "grep-bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("benchmarks/bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .ReleaseSafe,
             .imports = &.{
                 .{ .name = "zig-metal", .module = zig_metal_module },
                 .{ .name = "build_options", .module = build_options_module },
@@ -158,9 +291,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "cpu_gnu", .module = cpu_gnu_module },
             },
         }),
     });
+
+    // Add GNU grep C sources to benchmark
+    addGnuGrepSources(bench_exe, b, gnu_grep);
 
     if (is_macos) {
         if (is_native) {
@@ -298,10 +435,37 @@ pub fn build(b: *std.Build) void {
         unit_tests.step.dependOn(&metal_compile_check.step);
     }
 
+    // Regex tests from tests/regex_tests.zig
+    const regex_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/regex_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zig-metal", .module = zig_metal_module },
+                .{ .name = "build_options", .module = build_options_module },
+                .{ .name = "vulkan", .module = vulkan_module },
+                .{ .name = "spirv", .module = spirv_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "cpu", .module = cpu_module },
+            },
+        }),
+    });
+
+    if (is_macos and is_native) {
+        regex_tests.linkFramework("Foundation");
+        regex_tests.linkFramework("Metal");
+        regex_tests.linkFramework("QuartzCore");
+        regex_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
+        regex_tests.linkSystemLibrary("MoltenVK");
+    }
+
     const run_main_tests = b.addRunArtifact(main_tests);
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    const run_regex_tests = b.addRunArtifact(regex_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_main_tests.step);
     test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&run_regex_tests.step);
 }

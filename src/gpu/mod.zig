@@ -56,6 +56,7 @@ pub const SearchOptions = struct {
     word_boundary: bool = false,
     invert_match: bool = false,
     fixed_string: bool = true,
+    extended: bool = false, // ERE mode (-E), when false uses BRE (-G)
 
     pub fn toFlags(self: SearchOptions) u32 {
         var flags: u32 = 0;

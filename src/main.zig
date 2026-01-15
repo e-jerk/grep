@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
+const cpu_gnu = @import("cpu_gnu");
 
 const SearchOptions = gpu.SearchOptions;
 
@@ -9,7 +10,8 @@ const SearchOptions = gpu.SearchOptions;
 const BackendMode = enum {
     auto, // Automatically select based on workload
     gpu, // Auto-select best GPU (Metal on macOS, else Vulkan)
-    cpu,
+    cpu, // Optimized SIMD CPU backend (default for CPU)
+    cpu_gnu, // GNU grep backend (reference implementation)
     metal,
     vulkan,
 };
@@ -75,6 +77,13 @@ pub fn main() !u8 {
             options.invert_match = true;
         } else if (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings")) {
             options.fixed_string = true;
+            options.extended = false;
+        } else if (std.mem.eql(u8, arg, "-G") or std.mem.eql(u8, arg, "--basic-regexp")) {
+            options.fixed_string = false;
+            options.extended = false;
+        } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "--extended-regexp")) {
+            options.fixed_string = false;
+            options.extended = true;
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count_only = true;
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--regexp")) {
@@ -90,8 +99,10 @@ pub fn main() !u8 {
             try patterns.append(allocator, arg[2..]);
         } else if (std.mem.startsWith(u8, arg, "--regexp=")) {
             try patterns.append(allocator, arg["--regexp=".len..]);
-        } else if (std.mem.eql(u8, arg, "--cpu")) {
+        } else if (std.mem.eql(u8, arg, "--cpu") or std.mem.eql(u8, arg, "--cpu-optimized")) {
             backend_mode = .cpu;
+        } else if (std.mem.eql(u8, arg, "--gnu")) {
+            backend_mode = .cpu_gnu;
         } else if (std.mem.eql(u8, arg, "--gpu")) {
             backend_mode = .gpu;
         } else if (std.mem.eql(u8, arg, "--metal")) {
@@ -228,15 +239,32 @@ const ProcessResult = struct {
     had_error: bool,
 };
 
+/// Choose appropriate search function based on options and backend
+fn doSearch(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator, backend_mode: BackendMode) !gpu.SearchResult {
+    const use_gnu = backend_mode == .cpu_gnu;
+
+    if (options.fixed_string) {
+        return if (use_gnu)
+            cpu_gnu.search(text, pattern, options, allocator)
+        else
+            cpu.search(text, pattern, options, allocator);
+    } else {
+        return if (use_gnu)
+            cpu_gnu.searchRegex(text, pattern, options, allocator)
+        else
+            cpu.searchRegex(text, pattern, options, allocator);
+    }
+}
+
 /// Search for multiple patterns in text, combining results (OR semantics)
-fn searchMultiPattern(allocator: std.mem.Allocator, text: []const u8, all_patterns: []const []const u8, options: SearchOptions) !gpu.SearchResult {
+fn searchMultiPattern(allocator: std.mem.Allocator, text: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode) !gpu.SearchResult {
     if (all_patterns.len == 0) {
         return gpu.SearchResult{ .matches = &.{}, .total_matches = 0, .allocator = allocator };
     }
 
     // For single pattern, use regular search
     if (all_patterns.len == 1) {
-        return cpu.search(text, all_patterns[0], options, allocator);
+        return doSearch(text, all_patterns[0], options, allocator, backend_mode);
     }
 
     // Multiple patterns: search each and combine results
@@ -249,7 +277,7 @@ fn searchMultiPattern(allocator: std.mem.Allocator, text: []const u8, all_patter
     var total_matches: u64 = 0;
 
     for (all_patterns) |pattern| {
-        var result = cpu.search(text, pattern, options, allocator) catch continue;
+        var result = doSearch(text, pattern, options, allocator, backend_mode) catch continue;
         defer result.deinit();
 
         for (result.matches) |match| {
@@ -322,19 +350,23 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
     const backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(first_pattern, options, file_size, adjusted_config),
         .gpu => if (build_options.is_macos) .metal else .vulkan,
-        .cpu => .cpu,
+        .cpu, .cpu_gnu => .cpu, // Both CPU backends use .cpu for dispatch
         .metal => .metal,
         .vulkan => .vulkan,
     };
 
     if (verbose) {
         std.debug.print("(standard input) ({d} bytes)\n", .{file_size});
-        std.debug.print("Backend: {s}\n", .{@tagName(backend)});
+        if (backend_mode == .cpu_gnu) {
+            std.debug.print("Backend: cpu_gnu (GNU grep)\n", .{});
+        } else {
+            std.debug.print("Backend: {s}\n", .{@tagName(backend)});
+        }
     }
 
     // For multiple patterns, always use CPU multi-pattern search
     var result = if (all_patterns.len > 1)
-        searchMultiPattern(allocator, text, all_patterns, options) catch {
+        searchMultiPattern(allocator, text, all_patterns, options, backend_mode) catch {
             return .{ .found = false, .had_error = true };
         }
     else switch (backend) {
@@ -342,19 +374,19 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
             if (build_options.is_macos) {
                 const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
                     if (verbose) std.debug.print("Metal init failed: {}, falling back to CPU\n", .{err});
-                    break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                         return .{ .found = false, .had_error = true };
                     };
                 };
                 defer searcher.deinit();
                 break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
                     if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
-                    break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                         return .{ .found = false, .had_error = true };
                     };
                 };
             } else {
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             }
@@ -362,22 +394,22 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         .vulkan => blk: {
             const searcher = gpu.vulkan.VulkanSearcher.init(allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan init failed: {}, falling back to CPU\n", .{err});
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             };
             defer searcher.deinit();
             break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             };
         },
-        .cpu => cpu.search(text, first_pattern, options, allocator) catch {
+        .cpu => doSearch(text, first_pattern, options, allocator, backend_mode) catch {
             return .{ .found = false, .had_error = true };
         },
-        .cuda, .opencl => cpu.search(text, first_pattern, options, allocator) catch {
+        .cuda, .opencl => doSearch(text, first_pattern, options, allocator, backend_mode) catch {
             return .{ .found = false, .had_error = true };
         },
     };
@@ -633,7 +665,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     const backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(first_pattern, options, file_size, adjusted_config),
         .gpu => if (build_options.is_macos) .metal else .vulkan,
-        .cpu => .cpu,
+        .cpu, .cpu_gnu => .cpu, // Both CPU backends use .cpu for dispatch
         .metal => .metal,
         .vulkan => .vulkan,
     };
@@ -642,6 +674,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         std.debug.print("File: {s} ({d} bytes)\n", .{ filepath, file_size });
         if (backend_mode == .auto) {
             std.debug.print("Auto-selected backend: {s}\n", .{@tagName(backend)});
+        } else if (backend_mode == .cpu_gnu) {
+            std.debug.print("Backend: cpu_gnu (GNU grep)\n", .{});
         } else {
             std.debug.print("Backend: {s}\n", .{@tagName(backend)});
         }
@@ -655,7 +689,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
 
     // For multiple patterns, always use CPU multi-pattern search
     var result = if (all_patterns.len > 1)
-        searchMultiPattern(allocator, text, all_patterns, options) catch {
+        searchMultiPattern(allocator, text, all_patterns, options, backend_mode) catch {
             return .{ .found = false, .had_error = true };
         }
     else switch (backend) {
@@ -663,20 +697,20 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
             if (build_options.is_macos) {
                 const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
                     if (verbose) std.debug.print("Metal init failed: {}, falling back to CPU\n", .{err});
-                    break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                         return .{ .found = false, .had_error = true };
                     };
                 };
                 defer searcher.deinit();
                 break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
                     if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
-                    break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                         return .{ .found = false, .had_error = true };
                     };
                 };
             } else {
                 if (verbose) std.debug.print("Metal not available, falling back to CPU\n", .{});
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             }
@@ -684,25 +718,25 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         .vulkan => blk: {
             const searcher = gpu.vulkan.VulkanSearcher.init(allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan init failed: {}, falling back to CPU\n", .{err});
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             };
             defer searcher.deinit();
             break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
                 if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
-                break :blk cpu.search(text, first_pattern, options, allocator) catch {
+                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
                 };
             };
         },
-        .cpu => cpu.search(text, first_pattern, options, allocator) catch {
+        .cpu => doSearch(text, first_pattern, options, allocator, backend_mode) catch {
             return .{ .found = false, .had_error = true };
         },
         // CUDA and OpenCL not yet supported - fall back to CPU
         .cuda, .opencl => blk: {
             if (verbose) std.debug.print("{s} not supported, falling back to CPU\n", .{@tagName(backend)});
-            break :blk cpu.search(text, first_pattern, options, allocator) catch {
+            break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                 return .{ .found = false, .had_error = true };
             };
         },
@@ -766,7 +800,9 @@ fn printUsage() void {
         \\
         \\Pattern selection and interpretation:
         \\  -e, --regexp=PATTERN      use PATTERN for matching
-        \\  -F, --fixed-strings       PATTERN is a literal string
+        \\  -E, --extended-regexp     PATTERN is an extended regular expression (ERE)
+        \\  -G, --basic-regexp        PATTERN is a basic regular expression (BRE)
+        \\  -F, --fixed-strings       PATTERN is a literal string (default)
         \\  -i, --ignore-case         ignore case distinctions in patterns and data
         \\  -w, --word-regexp         match only whole words
         \\  -v, --invert-match        select non-matching lines
@@ -775,10 +811,11 @@ fn printUsage() void {
         \\  -c, --count               print only a count of matching lines per FILE
         \\  -V, --verbose             print backend and timing information
         \\
-        \\GPU Backend selection:
+        \\Backend selection:
         \\  --auto                    auto-select optimal backend (default)
+        \\  --cpu, --cpu-optimized    force optimized CPU backend (SIMD)
+        \\  --gnu                     force GNU grep backend (reference)
         \\  --gpu                     force GPU (Metal on macOS, Vulkan on Linux)
-        \\  --cpu                     force CPU backend
         \\  --metal                   force Metal backend (macOS only)
         \\  --vulkan                  force Vulkan backend
         \\
@@ -807,6 +844,8 @@ fn printUsage() void {
         \\Examples:
         \\  grep 'error' /var/log/syslog      Search for 'error' in syslog
         \\  grep -i 'warning' *.log           Case-insensitive search
+        \\  grep -E 'error|warning' *.log     Extended regex (ERE)
+        \\  grep -G 'ab\+c' file.txt          Basic regex (BRE)
         \\  cat file.txt | grep 'pattern'     Read from stdin
         \\  grep --gpu 'needle' haystack.txt  Force GPU acceleration
         \\
