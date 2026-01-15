@@ -61,13 +61,15 @@ pub fn build(b: *std.Build) void {
         "lib/safe-read.c",
         // "lib/setlocale_null.c",  // Using inline implementation
         "lib/setlocale-lock.c",
-        "lib/striconv.c",
+        // "lib/striconv.c",  // Causes cross-compilation issues, and we don't need iconv
         "lib/strnlen1.c",
         // "lib/xalloc-die.c",  // Using our own implementation in gnulib_stubs.c
         // "lib/xmalloc.c",     // Using our own implementation in gnulib_stubs.c
     };
 
     // C compiler flags
+    // NOTE: Cross-compilation from macOS to Linux is not supported due to a Zig 0.15.2 bug
+    // that incorrectly includes macOS SDK headers. Linux builds should be done on Linux.
     const c_flags = &[_][]const u8{
         "-std=gnu11",
         "-DHAVE_CONFIG_H",
@@ -87,40 +89,36 @@ pub fn build(b: *std.Build) void {
 
     // Helper function to add GNU grep C sources to an artifact
     const addGnuGrepSources = struct {
-        fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu: *std.Build.Dependency, target_is_macos: bool) void {
+        fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu: *std.Build.Dependency, flags: []const []const u8) void {
             // Add GNU grep source files
             for (gnu_src_files) |src| {
                 compile.addCSourceFile(.{
                     .file = gnu.path(src),
-                    .flags = c_flags,
+                    .flags = flags,
                 });
             }
             // Add gnulib source files
             for (gnu_lib_files) |src| {
                 compile.addCSourceFile(.{
                     .file = gnu.path(src),
-                    .flags = c_flags,
+                    .flags = flags,
                 });
             }
             // Add our wrapper and stub files
             compile.addCSourceFile(.{
                 .file = builder.path("src/gnu/gnu_grep_wrapper.c"),
-                .flags = c_flags,
+                .flags = flags,
             });
             compile.addCSourceFile(.{
                 .file = builder.path("src/gnu/gnulib_stubs.c"),
-                .flags = c_flags,
+                .flags = flags,
             });
             // Include paths - our config.h first, then gnulib lib, then src
             compile.addIncludePath(builder.path("src/gnu")); // Our config.h and stubs
             compile.addIncludePath(gnu.path("lib"));
             compile.addIncludePath(gnu.path("src"));
-            // Link libc (iconv is included in libc on macOS)
+            // Link libc - iconv is included in libc on both macOS and glibc (Linux)
             compile.linkLibC();
-            // On Linux, link iconv separately
-            if (!target_is_macos) {
-                compile.linkSystemLibrary("iconv");
-            }
         }
     }.add;
 
@@ -246,7 +244,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add GNU grep C sources to main executable (includes wrapper and stubs)
-    addGnuGrepSources(exe, b, gnu_grep, is_macos);
+    addGnuGrepSources(exe, b, gnu_grep, c_flags);
 
     // Platform-specific linking
     if (is_macos) {
@@ -300,7 +298,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add GNU grep C sources to benchmark
-    addGnuGrepSources(bench_exe, b, gnu_grep, is_macos);
+    addGnuGrepSources(bench_exe, b, gnu_grep, c_flags);
 
     if (is_macos) {
         if (is_native) {

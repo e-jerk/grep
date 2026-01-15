@@ -2956,12 +2956,63 @@
 /* Mark config.h as included for gnulib headers */
 #define _GL_CONFIG_H_INCLUDED 1
 
-/* gnulib compatibility - we provide inline implementations */
+/* gnulib compatibility - we provide implementations in gnulib_stubs.c */
 #undef HAVE_REALLOCARRAY
 #undef HAVE_RAWMEMCHR
 #undef HAVE_MEMRCHR
 #undef HAVE_MBSLEN
 #undef HAVE_SETLOCALE_NULL_R
 
-/* Include compatibility implementations */
-#include "gnulib_compat.h"
+/* Function declarations for gnulib compatibility - implementations in gnulib_stubs.c */
+#include <stddef.h>  /* for size_t */
+void *reallocarray(void *ptr, size_t nmemb, size_t size);
+void *rawmemchr(const void *s, int c);
+void *memrchr(const void *s, int c, size_t n);
+size_t mbslen(const char *s);
+int setlocale_null_r(int category, char *buf, size_t bufsize);
+
+/* Attribute macros used by gnulib headers */
+#ifndef _GL_ATTRIBUTE_FORMAT_PRINTF_STANDARD
+#define _GL_ATTRIBUTE_FORMAT_PRINTF_STANDARD(a, b) __attribute__((__format__(__printf__, a, b)))
+#endif
+
+#ifndef _GL_ARG_NONNULL
+#define _GL_ARG_NONNULL(args)
+#endif
+
+#ifndef _GL_ATTRIBUTE_FORMAT
+#define _GL_ATTRIBUTE_FORMAT(spec) __attribute__((__format__ spec))
+#endif
+
+#ifndef _GL_ATTRIBUTE_PURE
+#define _GL_ATTRIBUTE_PURE __attribute__((__pure__))
+#endif
+
+#ifndef _GL_ATTRIBUTE_CONST
+#define _GL_ATTRIBUTE_CONST __attribute__((__const__))
+#endif
+
+#ifndef _GL_ATTRIBUTE_MALLOC
+#define _GL_ATTRIBUTE_MALLOC __attribute__((__malloc__))
+#endif
+
+#ifndef _GL_ATTRIBUTE_RETURNS_NONNULL
+#define _GL_ATTRIBUTE_RETURNS_NONNULL __attribute__((__returns_nonnull__))
+#endif
+
+#ifndef _GL_ATTRIBUTE_ALLOC_SIZE
+#define _GL_ATTRIBUTE_ALLOC_SIZE(args)
+#endif
+
+#ifndef _GL_ATTRIBUTE_DEALLOC
+#define _GL_ATTRIBUTE_DEALLOC(f, i)
+#endif
+
+#ifndef _GL_ATTRIBUTE_NODISCARD
+#define _GL_ATTRIBUTE_NODISCARD
+#endif
+
+/* static_assert compatibility for older C standards */
+#ifndef static_assert
+#define static_assert _Static_assert
+#endif
