@@ -87,7 +87,7 @@ pub fn build(b: *std.Build) void {
 
     // Helper function to add GNU grep C sources to an artifact
     const addGnuGrepSources = struct {
-        fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu: *std.Build.Dependency) void {
+        fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu: *std.Build.Dependency, target_is_macos: bool) void {
             // Add GNU grep source files
             for (gnu_src_files) |src| {
                 compile.addCSourceFile(.{
@@ -115,9 +115,12 @@ pub fn build(b: *std.Build) void {
             compile.addIncludePath(builder.path("src/gnu")); // Our config.h and stubs
             compile.addIncludePath(gnu.path("lib"));
             compile.addIncludePath(gnu.path("src"));
-            // Link libc and iconv
+            // Link libc (iconv is included in libc on macOS)
             compile.linkLibC();
-            compile.linkSystemLibrary("iconv");
+            // On Linux, link iconv separately
+            if (!target_is_macos) {
+                compile.linkSystemLibrary("iconv");
+            }
         }
     }.add;
 
@@ -243,7 +246,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add GNU grep C sources to main executable (includes wrapper and stubs)
-    addGnuGrepSources(exe, b, gnu_grep);
+    addGnuGrepSources(exe, b, gnu_grep, is_macos);
 
     // Platform-specific linking
     if (is_macos) {
@@ -297,7 +300,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add GNU grep C sources to benchmark
-    addGnuGrepSources(bench_exe, b, gnu_grep);
+    addGnuGrepSources(bench_exe, b, gnu_grep, is_macos);
 
     if (is_macos) {
         if (is_native) {
