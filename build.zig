@@ -152,7 +152,7 @@ pub fn build(b: *std.Build) void {
     // Shared shader library
     const shaders_common = b.dependency("shaders_common", .{});
 
-    // Compile SPIR-V shader from GLSL for Vulkan
+    // Compile SPIR-V shader from GLSL for Vulkan (literal search)
     const spirv_compile = b.addSystemCommand(&.{
         "glslc",
         "--target-env=vulkan1.2",
@@ -165,22 +165,37 @@ pub fn build(b: *std.Build) void {
     const spirv_output = spirv_compile.addOutputFileArg("search.spv");
     spirv_compile.addFileArg(b.path("src/shaders/search.comp"));
 
+    // Compile SPIR-V shader from GLSL for Vulkan (regex search)
+    const spirv_regex_compile = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.2",
+        "-O",
+    });
+    spirv_regex_compile.addArg("-I");
+    spirv_regex_compile.addDirectoryArg(shaders_common.path("glsl"));
+    spirv_regex_compile.addArg("-o");
+    const spirv_regex_output = spirv_regex_compile.addOutputFileArg("search_regex.spv");
+    spirv_regex_compile.addFileArg(b.path("src/shaders/search_regex.comp"));
+
     // Create embedded SPIR-V module
     const spirv_module = b.addModule("spirv", .{
         .root_source_file = b.addWriteFiles().add("spirv.zig",
             \\pub const EMBEDDED_SPIRV = @embedFile("search.spv");
+            \\pub const EMBEDDED_SPIRV_REGEX = @embedFile("search_regex.spv");
         ),
     });
     spirv_module.addAnonymousImport("search.spv", .{ .root_source_file = spirv_output });
+    spirv_module.addAnonymousImport("search_regex.spv", .{ .root_source_file = spirv_regex_output });
 
-    // Preprocess Metal shader to inline the string_ops.h include
-    // Concatenates: header + shader (with include line removed)
+    // Preprocess Metal shader to inline the string_ops.h and regex_ops.h includes
+    // Concatenates: string_ops.h + regex_ops.h + shader (with include lines removed)
     const metal_preprocess = b.addSystemCommand(&.{
         "/bin/sh", "-c",
-        \\cat "$1" && grep -v '#include "string_ops.h"' "$2"
+        \\cat "$1" "$2" && grep -v '#include "string_ops.h"' "$3" | grep -v '#include "regex_ops.h"'
         , "--",
     });
     metal_preprocess.addFileArg(shaders_common.path("metal/string_ops.h"));
+    metal_preprocess.addFileArg(shaders_common.path("metal/regex_ops.h"));
     metal_preprocess.addFileArg(b.path("src/shaders/search.metal"));
     const preprocessed_metal = metal_preprocess.captureStdOut();
 
@@ -202,6 +217,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "spirv", .module = spirv_module },
             .{ .name = "metal_shader", .module = metal_module },
             .{ .name = "e_jerk_gpu", .module = e_jerk_gpu_module },
+            .{ .name = "regex", .module = regex_module },
         },
     });
 

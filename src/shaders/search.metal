@@ -1,5 +1,6 @@
 #include <metal_stdlib>
 #include "string_ops.h"
+#include "regex_ops.h"
 using namespace metal;
 
 // ============================================================================
@@ -147,6 +148,144 @@ kernel void build_skip_table(
             } else if (tid >= 'a' && tid <= 'z') {
                 skip_table[tid - 32] = skip;
             }
+        }
+    }
+}
+
+// ============================================================================
+// Regex Search Kernel - Thompson NFA execution
+// ============================================================================
+
+struct RegexSearchConfig {
+    uint text_len;
+    uint num_states;
+    uint start_state;
+    uint header_flags;
+    uint num_bitmaps;
+    uint max_results;
+    uint flags;
+    uint _pad;
+};
+
+struct RegexMatchOutput {
+    uint start;
+    uint end;
+    uint line_start;
+    uint flags;
+};
+
+kernel void regex_search(
+    device const uchar* text [[buffer(0)]],
+    constant RegexState* states [[buffer(1)]],
+    constant uint* bitmaps [[buffer(2)]],
+    constant RegexSearchConfig& config [[buffer(3)]],
+    constant RegexHeader& header [[buffer(4)]],
+    device RegexMatchOutput* results [[buffer(5)]],
+    device atomic_uint* result_count [[buffer(6)]],
+    device atomic_uint* total_matches [[buffer(7)]],
+    uint tid [[thread_position_in_grid]],
+    uint num_threads [[threads_per_grid]]
+) {
+    if (tid >= num_threads) return;
+
+    bool invert = (config.flags & FLAG_INVERT_MATCH) != 0;
+
+    // Calculate this thread's search range
+    uint chunk_size = (config.text_len + num_threads - 1) / num_threads;
+    uint start_pos = tid * chunk_size;
+    uint end_pos = min(start_pos + chunk_size, config.text_len);
+
+    if (start_pos >= config.text_len) return;
+
+    // Search for regex matches in this chunk
+    uint pos = start_pos;
+
+    while (pos < end_pos) {
+        uint match_start, match_end;
+        bool found = regex_find(
+            &header,
+            states,
+            bitmaps,
+            text,
+            config.text_len,
+            pos,
+            &match_start,
+            &match_end
+        );
+
+        if (!found) break;
+        if (match_start >= end_pos) break;
+
+        // Record this match (apply invert logic)
+        bool should_record = found != invert;
+        if (should_record) {
+            uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
+
+            if (idx < config.max_results) {
+                results[idx].start = match_start;
+                results[idx].end = match_end;
+                results[idx].line_start = find_line_start(text, match_start);
+                results[idx].flags = 1;  // FLAG_VALID
+            }
+        }
+
+        // Move past this match
+        pos = (match_end > match_start) ? match_end : match_start + 1;
+    }
+}
+
+// ============================================================================
+// Line-based Regex Search Kernel (one thread per line)
+// ============================================================================
+
+kernel void regex_search_lines(
+    device const uchar* text [[buffer(0)]],
+    constant RegexState* states [[buffer(1)]],
+    constant uint* bitmaps [[buffer(2)]],
+    constant RegexSearchConfig& config [[buffer(3)]],
+    constant RegexHeader& header [[buffer(4)]],
+    device RegexMatchOutput* results [[buffer(5)]],
+    device atomic_uint* result_count [[buffer(6)]],
+    device atomic_uint* total_matches [[buffer(7)]],
+    device const uint* line_offsets [[buffer(8)]],
+    device const uint* line_lengths [[buffer(9)]],
+    uint gid [[thread_position_in_grid]],
+    uint num_lines [[threads_per_grid]]
+) {
+    if (gid >= num_lines) return;
+
+    uint line_start = line_offsets[gid];
+    uint line_len = line_lengths[gid];
+    uint line_end = line_start + line_len;
+
+    bool invert = (config.flags & FLAG_INVERT_MATCH) != 0;
+
+    // Search for regex in this line
+    uint match_start, match_end;
+    bool found = regex_find(
+        &header,
+        states,
+        bitmaps,
+        text + line_start,
+        line_len,
+        0,
+        &match_start,
+        &match_end
+    );
+
+    // Apply invert logic
+    if (invert) found = !found;
+
+    if (found) {
+        uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
+
+        if (idx < config.max_results) {
+            results[idx].start = invert ? line_start : (line_start + match_start);
+            results[idx].end = invert ? line_end : (line_start + match_end);
+            results[idx].line_start = line_start;
+            results[idx].flags = 1;
         }
     }
 }

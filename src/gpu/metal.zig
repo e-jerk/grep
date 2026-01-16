@@ -1,11 +1,16 @@
 const std = @import("std");
 const mtl = @import("zig-metal");
 const mod = @import("mod.zig");
+const regex_compiler = @import("regex_compiler.zig");
+const regex_lib = @import("regex");
 
 const SearchConfig = mod.SearchConfig;
 const MatchResult = mod.MatchResult;
 const SearchOptions = mod.SearchOptions;
 const SearchResult = mod.SearchResult;
+const RegexSearchConfig = mod.RegexSearchConfig;
+const RegexState = mod.RegexState;
+const RegexMatchResult = mod.RegexMatchResult;
 const EMBEDDED_METAL_SHADER = mod.EMBEDDED_METAL_SHADER;
 const MAX_RESULTS = mod.MAX_RESULTS;
 const MAX_GPU_BUFFER_SIZE = mod.MAX_GPU_BUFFER_SIZE;
@@ -17,6 +22,7 @@ pub const MetalSearcher = struct {
     device: mtl.MTLDevice,
     command_queue: mtl.MTLCommandQueue,
     bmh_pipeline: mtl.MTLComputePipelineState,
+    regex_pipeline: mtl.MTLComputePipelineState,
     allocator: std.mem.Allocator,
     threads_per_group: usize,
     capabilities: mod.GpuCapabilities,
@@ -46,6 +52,17 @@ pub const MetalSearcher = struct {
             return error.PipelineCreationFailed;
         };
 
+        // Create regex search pipeline
+        const regex_func_name = mtl.NSString.stringWithUTF8String("regex_search_lines");
+        var regex_func = library.newFunctionWithName(regex_func_name) orelse {
+            return error.FunctionNotFound;
+        };
+        defer regex_func.release();
+
+        const regex_pipeline = device.newComputePipelineStateWithFunctionError(regex_func, null) orelse {
+            return error.PipelineCreationFailed;
+        };
+
         // Query actual hardware attributes from Metal API
         const max_threads = bmh_pipeline.maxTotalThreadsPerThreadgroup();
         const threads_to_use: usize = @min(256, max_threads);
@@ -72,6 +89,7 @@ pub const MetalSearcher = struct {
             .device = device,
             .command_queue = command_queue,
             .bmh_pipeline = bmh_pipeline,
+            .regex_pipeline = regex_pipeline,
             .allocator = allocator,
             .threads_per_group = threads_to_use,
             .capabilities = capabilities,
@@ -80,6 +98,7 @@ pub const MetalSearcher = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.regex_pipeline.release();
         self.bmh_pipeline.release();
         self.command_queue.release();
         self.device.release();
@@ -180,5 +199,171 @@ pub const MetalSearcher = struct {
         }
 
         return SearchResult{ .matches = matches, .total_matches = total_matches, .allocator = allocator };
+    }
+
+    /// GPU-accelerated regex pattern search
+    pub fn searchRegex(self: *Self, text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
+        if (text.len > MAX_GPU_BUFFER_SIZE) return error.TextTooLarge;
+
+        // Compile regex pattern for GPU
+        var gpu_regex = try regex_compiler.compileForGpu(pattern, .{
+            .case_insensitive = options.case_insensitive,
+        }, allocator);
+        defer gpu_regex.deinit();
+
+        // Find line boundaries
+        var line_offsets: std.ArrayListUnmanaged(u32) = .{};
+        defer line_offsets.deinit(allocator);
+        var line_lengths: std.ArrayListUnmanaged(u32) = .{};
+        defer line_lengths.deinit(allocator);
+
+        var line_start: usize = 0;
+        for (text, 0..) |c, i| {
+            if (c == '\n') {
+                try line_offsets.append(allocator, @intCast(line_start));
+                try line_lengths.append(allocator, @intCast(i - line_start));
+                line_start = i + 1;
+            }
+        }
+        if (line_start < text.len) {
+            try line_offsets.append(allocator, @intCast(line_start));
+            try line_lengths.append(allocator, @intCast(text.len - line_start));
+        }
+
+        const num_lines = line_offsets.items.len;
+        if (num_lines == 0) {
+            return SearchResult{
+                .matches = &[_]MatchResult{},
+                .total_matches = 0,
+                .allocator = allocator,
+            };
+        }
+
+        // Create text buffer
+        var text_buffer = self.device.newBufferWithLengthOptions(text.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer text_buffer.release();
+        if (text_buffer.contents()) |ptr| {
+            @memcpy(@as([*]u8, @ptrCast(ptr))[0..text.len], text);
+        }
+
+        // Create states buffer
+        const states_size = gpu_regex.states.len * @sizeOf(RegexState);
+        var states_buffer = self.device.newBufferWithLengthOptions(@max(states_size, 1), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer states_buffer.release();
+        if (states_size > 0) {
+            if (states_buffer.contents()) |ptr| {
+                const dst: [*]RegexState = @ptrCast(@alignCast(ptr));
+                @memcpy(dst[0..gpu_regex.states.len], gpu_regex.states);
+            }
+        }
+
+        // Create bitmaps buffer
+        const bitmaps_size = gpu_regex.bitmaps.len * @sizeOf(u32);
+        var bitmaps_buffer = self.device.newBufferWithLengthOptions(@max(bitmaps_size, 4), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer bitmaps_buffer.release();
+        if (bitmaps_size > 0) {
+            if (bitmaps_buffer.contents()) |ptr| {
+                const dst: [*]u32 = @ptrCast(@alignCast(ptr));
+                @memcpy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+            }
+        }
+
+        // Create config buffer
+        const config = RegexSearchConfig{
+            .text_len = @intCast(text.len),
+            .num_states = gpu_regex.header.num_states,
+            .start_state = gpu_regex.header.start_state,
+            .header_flags = gpu_regex.header.flags,
+            .num_bitmaps = @intCast(gpu_regex.bitmaps.len / 8),
+            .max_results = MAX_RESULTS,
+            .flags = options.toFlags(),
+        };
+        var config_buffer = self.device.newBufferWithLengthOptions(@sizeOf(RegexSearchConfig), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer config_buffer.release();
+        if (config_buffer.contents()) |ptr| {
+            @as(*RegexSearchConfig, @ptrCast(@alignCast(ptr))).* = config;
+        }
+
+        // Create header buffer
+        var header_buffer = self.device.newBufferWithLengthOptions(@sizeOf(mod.RegexHeader), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer header_buffer.release();
+        if (header_buffer.contents()) |ptr| {
+            @as(*mod.RegexHeader, @ptrCast(@alignCast(ptr))).* = gpu_regex.header;
+        }
+
+        // Create results buffer
+        const results_size = @sizeOf(RegexMatchResult) * MAX_RESULTS;
+        var results_buffer = self.device.newBufferWithLengthOptions(results_size, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer results_buffer.release();
+
+        // Create counters buffer
+        var counters_buffer = self.device.newBufferWithLengthOptions(8, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer counters_buffer.release();
+        const counters_ptr: *[2]u32 = @ptrCast(@alignCast(counters_buffer.contents()));
+        counters_ptr[0] = 0;
+        counters_ptr[1] = 0;
+
+        // Create line offsets/lengths buffers
+        var line_offsets_buffer = self.device.newBufferWithLengthOptions(line_offsets.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer line_offsets_buffer.release();
+        if (line_offsets_buffer.contents()) |ptr| {
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
+        }
+
+        var line_lengths_buffer = self.device.newBufferWithLengthOptions(line_lengths.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
+        defer line_lengths_buffer.release();
+        if (line_lengths_buffer.contents()) |ptr| {
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
+        }
+
+        // Execute regex matching
+        var cmd_buffer = self.command_queue.commandBuffer() orelse return error.CommandBufferFailed;
+        var encoder = cmd_buffer.computeCommandEncoder() orelse return error.EncoderFailed;
+
+        encoder.setComputePipelineState(self.regex_pipeline);
+        encoder.setBufferOffsetAtIndex(text_buffer, 0, 0);
+        encoder.setBufferOffsetAtIndex(states_buffer, 0, 1);
+        encoder.setBufferOffsetAtIndex(bitmaps_buffer, 0, 2);
+        encoder.setBufferOffsetAtIndex(config_buffer, 0, 3);
+        encoder.setBufferOffsetAtIndex(header_buffer, 0, 4);
+        encoder.setBufferOffsetAtIndex(results_buffer, 0, 5);
+        encoder.setBufferOffsetAtIndex(counters_buffer, 0, 6);
+        encoder.setBufferOffsetAtIndex(counters_buffer, 4, 7);
+        encoder.setBufferOffsetAtIndex(line_offsets_buffer, 0, 8);
+        encoder.setBufferOffsetAtIndex(line_lengths_buffer, 0, 9);
+
+        const grid_size = mtl.MTLSize{ .width = num_lines, .height = 1, .depth = 1 };
+        const threadgroup_size = mtl.MTLSize{ .width = @min(self.threads_per_group, num_lines), .height = 1, .depth = 1 };
+
+        encoder.dispatchThreadsThreadsPerThreadgroup(grid_size, threadgroup_size);
+        encoder.endEncoding();
+        cmd_buffer.commit();
+        cmd_buffer.waitUntilCompleted();
+
+        const result_count = counters_ptr[0];
+        const total_matches = counters_ptr[1];
+
+        // Copy results and convert RegexMatchResult to MatchResult
+        const num_to_copy = @min(result_count, MAX_RESULTS);
+        const matches = try allocator.alloc(MatchResult, num_to_copy);
+
+        if (num_to_copy > 0) {
+            const regex_results_ptr: [*]RegexMatchResult = @ptrCast(@alignCast(results_buffer.contents()));
+            for (0..num_to_copy) |i| {
+                const r = regex_results_ptr[i];
+                matches[i] = MatchResult{
+                    .position = r.start,
+                    .pattern_idx = 0,
+                    .match_len = r.end - r.start,
+                    .line_start = r.line_start,
+                };
+            }
+        }
+
+        return SearchResult{
+            .matches = matches,
+            .total_matches = total_matches,
+            .allocator = allocator,
+        };
     }
 };

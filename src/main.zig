@@ -778,12 +778,23 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                     };
                 };
                 defer searcher.deinit();
-                break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
-                    if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
-                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
-                        return .{ .found = false, .had_error = true };
+                // Use GPU regex for regex patterns, literal search for fixed strings
+                const use_regex = !options.fixed_string;
+                if (use_regex) {
+                    break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
+                        if (verbose) std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
+                        break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                            return .{ .found = false, .had_error = true };
+                        };
                     };
-                };
+                } else {
+                    break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
+                        if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
+                        break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                            return .{ .found = false, .had_error = true };
+                        };
+                    };
+                }
             } else {
                 break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
                     return .{ .found = false, .had_error = true };
@@ -798,12 +809,23 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                 };
             };
             defer searcher.deinit();
-            break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
-                if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
-                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
-                    return .{ .found = false, .had_error = true };
+            // Use GPU regex for regex patterns, literal search for fixed strings
+            const use_regex = !options.fixed_string;
+            if (use_regex) {
+                break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
+                    if (verbose) std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                        return .{ .found = false, .had_error = true };
+                    };
                 };
-            };
+            } else {
+                break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
+                    if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                        return .{ .found = false, .had_error = true };
+                    };
+                };
+            }
         },
         .cpu => doSearch(text, first_pattern, options, allocator, backend_mode) catch {
             return .{ .found = false, .had_error = true };
@@ -1230,12 +1252,23 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     };
                 };
                 defer searcher.deinit();
-                break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
-                    if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
-                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
-                        return .{ .found = false, .had_error = true };
+                // Use GPU regex for regex patterns, literal search for fixed strings
+                const use_regex = !options.fixed_string;
+                if (use_regex) {
+                    break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
+                        if (verbose) std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
+                        break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                            return .{ .found = false, .had_error = true };
+                        };
                     };
-                };
+                } else {
+                    break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
+                        if (verbose) std.debug.print("Metal search failed: {}, falling back to CPU\n", .{err});
+                        break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                            return .{ .found = false, .had_error = true };
+                        };
+                    };
+                }
             } else {
                 if (verbose) std.debug.print("Metal not available, falling back to CPU\n", .{});
                 break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
@@ -1251,12 +1284,23 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 };
             };
             defer searcher.deinit();
-            break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
-                if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
-                break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
-                    return .{ .found = false, .had_error = true };
+            // Use GPU regex for regex patterns, literal search for fixed strings
+            const use_regex = !options.fixed_string;
+            if (use_regex) {
+                break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
+                    if (verbose) std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                        return .{ .found = false, .had_error = true };
+                    };
                 };
-            };
+            } else {
+                break :blk searcher.search(text, first_pattern, options, allocator) catch |err| {
+                    if (verbose) std.debug.print("Vulkan search failed: {}, falling back to CPU\n", .{err});
+                    break :blk doSearch(text, first_pattern, options, allocator, backend_mode) catch {
+                        return .{ .found = false, .had_error = true };
+                    };
+                };
+            }
         },
         .cpu => doSearch(text, first_pattern, options, allocator, backend_mode) catch {
             return .{ .found = false, .had_error = true };

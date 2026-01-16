@@ -69,7 +69,7 @@ grep -V "pattern" largefile.txt
 | `-A/-B/-C` context lines | ✓ | ✓ | — | — | **Native** |
 | `-r` recursive search | ✓ | ✓ | — | — | **Native** |
 | `--color` output | ✓ | ✓ | — | — | **Native** |
-| `-E` extended regex | — | ✓ | — | — | GNU fallback |
+| `-E` extended regex | ✓ | ✓ | ✓ | ✓ | **Native** |
 | `-P` Perl regex | — | ✓ | — | — | GNU fallback |
 
 **Test Coverage**: 42/42 GNU compatibility tests passing
@@ -203,6 +203,7 @@ bash gnu-tests.sh   # GNU compatibility tests (42 tests)
 
 ## Recent Changes
 
+- **GPU Regex Support**: Native Thompson NFA regex execution on Metal and Vulkan GPUs for `-E` extended regex patterns
 - **Context Lines**: Native `-A`, `-B`, `-C` support with proper group separators
 - **Recursive Search**: Native `-r` flag with combined options (`-rn`, `-ri`, `-rc`, `-rl`)
 - **Color Output**: Native `--color` support with ANSI highlighting
