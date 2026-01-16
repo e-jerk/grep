@@ -52,25 +52,25 @@ grep -V "pattern" largefile.txt
 
 ## GNU Feature Compatibility
 
-| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
-|---------|:-------------:|:-----------:|:-----:|:------:|--------|
-| Basic pattern matching | ✓ | ✓ | ✓ | ✓ | Native |
-| `-i` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
-| `-w` word boundary | ✓ | ✓ | ✓ | ✓ | Native |
-| `-v` invert match | ✓ | ✓ | ✓ | ✓ | Native |
-| `-F` fixed strings | ✓ | ✓ | ✓ | ✓ | Native |
-| `-e` multiple patterns | ✓ | ✓ | — | — | Native (CPU) |
-| `-n` line numbers | ✓ | ✓ | — | — | Native |
-| `-c` count only | ✓ | ✓ | — | — | Native |
-| `-l` files with matches | ✓ | ✓ | — | — | Native |
-| `-L` files without match | ✓ | ✓ | — | — | Native |
-| `-q` quiet mode | ✓ | ✓ | — | — | Native |
-| `-o` only matching | ✓ | ✓ | — | — | Native |
-| `-A/-B/-C` context lines | ✓ | ✓ | — | — | **Native** |
-| `-r` recursive search | ✓ | ✓ | — | — | **Native** |
-| `--color` output | ✓ | ✓ | — | — | **Native** |
-| `-E` extended regex | ✓ | ✓ | ✓ | ✓ | **Native** |
-| `-P` Perl regex | — | ✓ | — | — | GNU fallback |
+| Feature | CPU | Metal | Vulkan | GPU Speedup | Status |
+|---------|:---:|:-----:|:------:|:-----------:|--------|
+| Basic pattern matching | ✓ | ✓ | ✓ | **17x** | Native |
+| `-i` case insensitive | ✓ | ✓ | ✓ | **11x** | Native |
+| `-w` word boundary | ✓ | ✓ | ✓ | **8x** | Native |
+| `-v` invert match | ✓ | ✓ | ✓ | **8x** | Native |
+| `-F` fixed strings | ✓ | ✓ | ✓ | **7x** | Native |
+| `-E` extended regex | ✓ | ✓ | ✓ | **5-10x** | **Native** |
+| `-e` multiple patterns | ✓ | — | — | CPU only | Native |
+| `-n` line numbers | ✓ | — | — | CPU only | Native |
+| `-c` count only | ✓ | — | — | CPU only | Native |
+| `-l` files with matches | ✓ | — | — | CPU only | Native |
+| `-L` files without match | ✓ | — | — | CPU only | Native |
+| `-q` quiet mode | ✓ | — | — | CPU only | Native |
+| `-o` only matching | ✓ | — | — | CPU only | Native |
+| `-A/-B/-C` context lines | ✓ | — | — | CPU only | **Native** |
+| `-r` recursive search | ✓ | — | — | CPU only | **Native** |
+| `--color` output | ✓ | — | — | CPU only | **Native** |
+| `-P` Perl regex | — | — | — | — | GNU fallback |
 
 **Test Coverage**: 42/42 GNU compatibility tests passing
 
