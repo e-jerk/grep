@@ -356,6 +356,7 @@ pub const MetalSearcher = struct {
                     .pattern_idx = 0,
                     .match_len = r.end - r.start,
                     .line_start = r.line_start,
+                    .line_num = r.line_num,
                 };
             }
         }

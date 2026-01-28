@@ -30,6 +30,10 @@ struct RegexMatchOutput {
     uint end;
     uint line_start;
     uint flags;
+    uint line_num;      // 1-based line number (computed by counting newlines)
+    uint _pad1;         // Padding for 32-byte alignment
+    uint _pad2;
+    uint _pad3;
 };
 
 // Buffer bindings
@@ -302,6 +306,8 @@ void main() {
             results[idx].end = invert ? (line_start + line_len) : match_end;
             results[idx].line_start = line_start;
             results[idx].flags = 1u;  // FLAG_VALID
+            // Line number is thread ID + 1 (1-based, one thread per line)
+            results[idx].line_num = gid + 1u;
         }
     }
 }

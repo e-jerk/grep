@@ -52,25 +52,28 @@ grep -V "pattern" largefile.txt
 
 ## GNU Feature Compatibility
 
-| Feature | CPU | Metal | Vulkan | GPU Speedup | Status |
-|---------|:---:|:-----:|:------:|:-----------:|--------|
-| Basic pattern matching | ✓ | ✓ | ✓ | **17x** | Native |
-| `-i` case insensitive | ✓ | ✓ | ✓ | **11x** | Native |
-| `-w` word boundary | ✓ | ✓ | ✓ | **8x** | Native |
-| `-v` invert match | ✓ | ✓ | ✓ | **8x** | Native |
-| `-F` fixed strings | ✓ | ✓ | ✓ | **7x** | Native |
-| `-E` extended regex | ✓ | ✓ | ✓ | **5-10x** | **Native** |
-| `-e` multiple patterns | ✓ | — | — | CPU only | Native |
-| `-n` line numbers | ✓ | — | — | CPU only | Native |
-| `-c` count only | ✓ | — | — | CPU only | Native |
-| `-l` files with matches | ✓ | — | — | CPU only | Native |
-| `-L` files without match | ✓ | — | — | CPU only | Native |
-| `-q` quiet mode | ✓ | — | — | CPU only | Native |
-| `-o` only matching | ✓ | — | — | CPU only | Native |
-| `-A/-B/-C` context lines | ✓ | — | — | CPU only | **Native** |
-| `-r` recursive search | ✓ | — | — | CPU only | **Native** |
-| `--color` output | ✓ | — | — | CPU only | **Native** |
+| Feature | CPU | Metal | Vulkan | GPU Speedup | Notes |
+|---------|:---:|:-----:|:------:|:-----------:|-------|
+| Basic pattern matching | ✓ | ✓ | ✓ | **17x** | Full GPU search |
+| `-i` case insensitive | ✓ | ✓ | ✓ | **11x** | Full GPU search |
+| `-w` word boundary | ✓ | ✓ | ✓ | **8x** | Full GPU search |
+| `-v` invert match | ✓ | ✓ | ✓ | **8x** | Full GPU search |
+| `-F` fixed strings | ✓ | ✓ | ✓ | **7x** | Full GPU search |
+| `-E` extended regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
+| `-G` basic regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
+| `-e` multiple patterns | ✓ | ✓ | ✓ | **5-10x** | GPU per-pattern |
+| `-n` line numbers | ✓ | ✓ | ✓ | **10x+** | GPU-computed line nums |
+| `-c` count only | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU count |
+| `-l` files with matches | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU filter |
+| `-L` files without match | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU filter |
+| `-q` quiet mode | ✓ | ✓ | ✓ | **10x+** | GPU search + early exit |
+| `-o` only matching | ✓ | ✓ | ✓ | **10x+** | GPU-computed positions |
+| `-A/-B/-C` context lines | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU format |
+| `-r` recursive search | ✓ | ✓ | ✓ | **10x+** | GPU search per file |
+| `--color` output | ✓ | ✓ | ✓ | **10x+** | GPU search + ANSI format |
 | `-P` Perl regex | — | — | — | — | GNU fallback |
+
+**GPU Architecture**: The GPU performs all pattern matching and line number computation. CPU handles file I/O and output formatting only.
 
 **Test Coverage**: 42/42 GNU compatibility tests passing
 

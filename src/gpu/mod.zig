@@ -50,6 +50,10 @@ pub const MatchResult = extern struct {
     pattern_idx: u32,
     match_len: u32,
     line_start: u32,
+    line_num: u32 = 0, // 1-based line number (computed on GPU)
+    _pad1: u32 = 0,
+    _pad2: u32 = 0,
+    _pad3: u32 = 0,
 };
 
 pub const SearchOptions = struct {
@@ -147,6 +151,10 @@ pub const RegexMatchResult = extern struct {
     end: u32,
     line_start: u32,
     flags: u32, // valid, etc.
+    line_num: u32 = 0, // 1-based line number (computed on GPU)
+    _pad1: u32 = 0,
+    _pad2: u32 = 0,
+    _pad3: u32 = 0,
 
     pub const FLAG_VALID: u32 = 0x01;
 };

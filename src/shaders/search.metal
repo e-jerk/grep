@@ -33,6 +33,10 @@ struct MatchResult {
     uint pattern_idx;
     uint match_len;
     uint line_start;
+    uint line_num;      // 1-based line number (computed by counting newlines)
+    uint _pad1;         // Padding for 16-byte alignment
+    uint _pad2;
+    uint _pad3;
 };
 
 // Common functions from string_ops.h:
@@ -94,10 +98,15 @@ kernel void bmh_search(
                     uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
 
                     if (idx < 1000000) {
+                        uint line_start = find_line_start(text, pos);
+                        // Compute line number: 1 + count of newlines before this position
+                        uint line_num = 1 + count_newlines_vec(text, 0, line_start);
+
                         results[idx].position = pos;
                         results[idx].pattern_idx = 0;
                         results[idx].match_len = pattern_len;
-                        results[idx].line_start = find_line_start(text, pos);
+                        results[idx].line_start = line_start;
+                        results[idx].line_num = line_num;
                     }
 
                     atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
@@ -172,6 +181,10 @@ struct RegexMatchOutput {
     uint end;
     uint line_start;
     uint flags;
+    uint line_num;      // 1-based line number (computed by counting newlines)
+    uint _pad1;         // Padding for 16-byte alignment
+    uint _pad2;
+    uint _pad3;
 };
 
 kernel void regex_search(
@@ -223,10 +236,15 @@ kernel void regex_search(
             atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
 
             if (idx < config.max_results) {
+                uint line_start = find_line_start(text, match_start);
+                // Compute line number: 1 + count of newlines before this position
+                uint line_num = 1 + count_newlines_vec(text, 0, line_start);
+
                 results[idx].start = match_start;
                 results[idx].end = match_end;
-                results[idx].line_start = find_line_start(text, match_start);
+                results[idx].line_start = line_start;
                 results[idx].flags = 1;  // FLAG_VALID
+                results[idx].line_num = line_num;
             }
         }
 
@@ -286,6 +304,8 @@ kernel void regex_search_lines(
             results[idx].end = invert ? line_end : (line_start + match_end);
             results[idx].line_start = line_start;
             results[idx].flags = 1;
+            // Line number is just the thread ID + 1 (1-based, one thread per line)
+            results[idx].line_num = gid + 1;
         }
     }
 }

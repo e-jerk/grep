@@ -31,6 +31,10 @@ struct MatchResult {
     uint pattern_idx;
     uint match_len;
     uint line_start;
+    uint line_num;      // 1-based line number (computed by counting newlines)
+    uint _pad1;         // Padding for 32-byte alignment
+    uint _pad2;
+    uint _pad3;
 };
 
 // Buffer bindings
@@ -158,6 +162,33 @@ uint find_line_start(uint pos) {
     return i;
 }
 
+// Count newlines in range [0, end) using vectorized operations
+uint count_newlines(uint end) {
+    uint count = 0u;
+    uint i = 0u;
+
+    // Process 4 bytes at a time using word access
+    while (i + 4u <= end) {
+        uint word_idx = i >> 2u;
+        uint word = text_data[word_idx];
+
+        // Check each byte for newline ('\n' = 10)
+        if ((word & 0xFFu) == 10u) count++;
+        if (((word >> 8u) & 0xFFu) == 10u) count++;
+        if (((word >> 16u) & 0xFFu) == 10u) count++;
+        if (((word >> 24u) & 0xFFu) == 10u) count++;
+        i += 4u;
+    }
+
+    // Process remaining bytes
+    while (i < end) {
+        if (get_byte(i, false) == 10u) count++;
+        i++;
+    }
+
+    return count;
+}
+
 void main() {
     uint tid = gl_GlobalInvocationID.x;
     uint num_threads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
@@ -197,10 +228,15 @@ void main() {
                 if (valid != invert) {
                     uint idx = atomicAdd(result_count, 1u);
                     if (idx < MAX_RESULTS) {
+                        uint line_start = find_line_start(pos);
+                        // Compute line number: 1 + count of newlines before this position
+                        uint line_num = 1u + count_newlines(line_start);
+
                         results[idx].position = pos;
                         results[idx].pattern_idx = 0u;
                         results[idx].match_len = pattern_len;
-                        results[idx].line_start = find_line_start(pos);
+                        results[idx].line_start = line_start;
+                        results[idx].line_num = line_num;
                     }
                     atomicAdd(total_matches, 1u);
                 }

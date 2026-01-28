@@ -890,12 +890,15 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                 _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
             }
             if (output_opts.line_numbers) {
-                // Calculate line number
-                var line_num: u32 = 1;
-                var pos: usize = 0;
-                while (pos < match.line_start) : (pos += 1) {
-                    if (text[pos] == '\n') line_num += 1;
-                }
+                // Use GPU-computed line number if available, otherwise compute on CPU
+                const line_num = if (match.line_num > 0) match.line_num else blk: {
+                    var ln: u32 = 1;
+                    var pos: usize = 0;
+                    while (pos < match.line_start) : (pos += 1) {
+                        if (text[pos] == '\n') ln += 1;
+                    }
+                    break :blk ln;
+                };
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
                 _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
@@ -922,28 +925,8 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         var current_line_num: u32 = 1;
         var last_line_counted: u32 = 0;
 
-        // Pre-calculate line numbers if needed
-        if (output_opts.line_numbers) {
-            // Build line number map for efficiency
-            var pos: usize = 0;
-            while (pos < text.len) : (pos += 1) {
-                if (text[pos] == '\n') current_line_num += 1;
-                if (pos == result.matches[0].line_start) break;
-            }
-        }
-
         for (result.matches) |match| {
             if (match.line_start != last_line_start) {
-                // Calculate line number if needed
-                if (output_opts.line_numbers) {
-                    // Count newlines from last position to current position
-                    var pos: usize = last_line_counted;
-                    while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') current_line_num += 1;
-                    }
-                    last_line_counted = match.line_start;
-                }
-
                 last_line_start = match.line_start;
 
                 var line_end = match.line_start;
@@ -954,8 +937,18 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                     _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
                 }
                 if (output_opts.line_numbers) {
+                    // Use GPU-computed line number if available, otherwise fall back to CPU computation
+                    const line_num = if (match.line_num > 0) match.line_num else blk: {
+                        // Fall back to counting newlines on CPU
+                        var pos: usize = last_line_counted;
+                        while (pos < match.line_start) : (pos += 1) {
+                            if (text[pos] == '\n') current_line_num += 1;
+                        }
+                        last_line_counted = match.line_start;
+                        break :blk current_line_num;
+                    };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{current_line_num}) catch continue;
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
@@ -1365,12 +1358,15 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
             }
             if (output_opts.line_numbers) {
-                // Calculate line number
-                var line_num: u32 = 1;
-                var pos: usize = 0;
-                while (pos < match.line_start) : (pos += 1) {
-                    if (text[pos] == '\n') line_num += 1;
-                }
+                // Use GPU-computed line number if available, otherwise compute on CPU
+                const line_num = if (match.line_num > 0) match.line_num else blk: {
+                    var ln: u32 = 1;
+                    var pos: usize = 0;
+                    while (pos < match.line_start) : (pos += 1) {
+                        if (text[pos] == '\n') ln += 1;
+                    }
+                    break :blk ln;
+                };
                 var num_buf: [16]u8 = undefined;
                 const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
                 _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
@@ -1400,16 +1396,6 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
 
         for (result.matches) |match| {
             if (match.line_start != last_line_start) {
-                // Calculate line number if needed
-                if (output_opts.line_numbers) {
-                    // Count newlines from last position to current position
-                    var pos: usize = last_line_counted;
-                    while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') current_line_num += 1;
-                    }
-                    last_line_counted = match.line_start;
-                }
-
                 last_line_start = match.line_start;
 
                 // Find line end
@@ -1421,8 +1407,18 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
                 }
                 if (output_opts.line_numbers) {
+                    // Use GPU-computed line number if available, otherwise fall back to CPU computation
+                    const line_num = if (match.line_num > 0) match.line_num else blk: {
+                        // Fall back to counting newlines on CPU
+                        var pos: usize = last_line_counted;
+                        while (pos < match.line_start) : (pos += 1) {
+                            if (text[pos] == '\n') current_line_num += 1;
+                        }
+                        last_line_counted = match.line_start;
+                        break :blk current_line_num;
+                    };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{current_line_num}) catch continue;
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
