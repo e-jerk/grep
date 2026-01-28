@@ -793,8 +793,8 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                     };
                 };
                 defer searcher.deinit();
-                // Use GPU regex for regex patterns, literal search for fixed strings
-                const use_regex = !options.fixed_string;
+                // Use GPU regex for regex patterns (including PCRE), literal search for fixed strings
+                const use_regex = !options.fixed_string or options.perl;
                 if (use_regex) {
                     break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
                         if (verbose) std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
@@ -824,8 +824,8 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                 };
             };
             defer searcher.deinit();
-            // Use GPU regex for regex patterns, literal search for fixed strings
-            const use_regex = !options.fixed_string;
+            // Use GPU regex for regex patterns (including PCRE), literal search for fixed strings
+            const use_regex = !options.fixed_string or options.perl;
             if (use_regex) {
                 break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
                     if (verbose) std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
@@ -1260,8 +1260,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     };
                 };
                 defer searcher.deinit();
-                // Use GPU regex for regex patterns, literal search for fixed strings
-                const use_regex = !options.fixed_string;
+                // Use GPU regex for regex patterns (including PCRE), literal search for fixed strings
+                const use_regex = !options.fixed_string or options.perl;
                 if (use_regex) {
                     break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
                         if (verbose) std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
@@ -1292,8 +1292,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 };
             };
             defer searcher.deinit();
-            // Use GPU regex for regex patterns, literal search for fixed strings
-            const use_regex = !options.fixed_string;
+            // Use GPU regex for regex patterns (including PCRE), literal search for fixed strings
+            const use_regex = !options.fixed_string or options.perl;
             if (use_regex) {
                 break :blk searcher.searchRegex(text, first_pattern, options, allocator) catch |err| {
                     if (verbose) std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
