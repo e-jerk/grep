@@ -61,6 +61,7 @@ grep -V "pattern" largefile.txt
 | `-F` fixed strings | ✓ | ✓ | ✓ | **7x** | Full GPU search |
 | `-E` extended regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
 | `-G` basic regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
+| `-P` Perl regex | ✓ | — | — | CPU | PCRE2 (lookahead, lookbehind, etc.) |
 | `-e` multiple patterns | ✓ | ✓ | ✓ | **5-10x** | GPU per-pattern |
 | `-n` line numbers | ✓ | ✓ | ✓ | **10x+** | GPU-computed line nums |
 | `-c` count only | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU count |

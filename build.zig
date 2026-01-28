@@ -252,6 +252,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Create pcre module for Perl-compatible regex (-P flag)
+    const pcre_module = b.addModule("pcre", .{
+        .root_source_file = b.path("src/pcre.zig"),
+        .imports = &.{
+            .{ .name = "gpu", .module = gpu_module },
+        },
+    });
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "grep",
@@ -267,12 +275,27 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "pcre", .module = pcre_module },
             },
         }),
     });
 
     // Add GNU grep C sources to main executable (includes wrapper and stubs)
     addGnuGrepSources(exe, b, gnu_grep, c_flags);
+
+    // Add PCRE2 wrapper C source
+    exe.addCSourceFile(.{
+        .file = b.path("src/gnu/pcre2_wrapper.c"),
+        .flags = c_flags,
+    });
+    exe.addIncludePath(b.path("src/gnu")); // For pcre2_wrapper.h
+
+    // Link PCRE2 library (from Homebrew on macOS, system on Linux)
+    if (is_macos) {
+        exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/pcre2/lib" });
+        exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/pcre2/include" });
+    }
+    exe.linkSystemLibrary("pcre2-8");
 
     // Platform-specific linking based on enabled backends
     if (is_native) {

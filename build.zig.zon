@@ -15,10 +15,10 @@
             .url = "git+https://github.com/e-jerk/regex#bf3f7db91ab18d0782acf46fa39f170abb2670ad",
             .hash = "e_jerk_regex-0.1.0-ex0qsUv2AADQ6ViebDG4UIHjxP9EAH7Ybws-O_VN62BB",
         },
-        // Shared shader library
+        // Shared shader library (with PCRE lookahead/lookbehind support)
         .shaders_common = .{
-            .url = "git+https://github.com/e-jerk/shaders-common#c132f464e1236f1f519c68c8203509255f65e3e5",
-            .hash = "shaders_common-0.1.0-dZ7wZxN7AACEW9xtWDNvjRG6YGuu5Z5WeidoqWnmo0Uq",
+            .url = "git+https://github.com/e-jerk/shaders-common#d47f92c4f169ea5c6bc3741acbd5f391c624a0e5",
+            .hash = "shaders_common-0.1.0-dZ7wZwSXAADpydgYFr1rkf_ld6M_rTnSsMvcL9TChc84",
         },
         // GPU detection and auto-selection library
         .e_jerk_gpu = .{

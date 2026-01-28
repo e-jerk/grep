@@ -62,6 +62,7 @@ pub const SearchOptions = struct {
     invert_match: bool = false,
     fixed_string: bool = true,
     extended: bool = false, // ERE mode (-E), when false uses BRE (-G)
+    perl: bool = false, // PCRE mode (-P) for Perl-compatible regex
 
     pub fn toFlags(self: SearchOptions) u32 {
         var flags: u32 = 0;
@@ -105,6 +106,13 @@ pub const RegexStateType = enum(u8) {
     line_start = 9, // ^
     line_end = 10, // $
     any = 11, // . including newline
+    // PCRE extensions
+    lookahead_pos = 12, // (?=...) positive lookahead
+    lookahead_neg = 13, // (?!...) negative lookahead
+    lookbehind_pos = 14, // (?<=...) positive lookbehind
+    lookbehind_neg = 15, // (?<!...) negative lookbehind
+    atomic_group = 16, // (?>...) atomic group (no backtrack)
+    non_greedy = 17, // Non-greedy quantifier marker
 };
 
 /// Compiled regex state (GPU-aligned, matches shader struct)
@@ -119,6 +127,7 @@ pub const RegexState = extern struct {
 
     pub const FLAG_CASE_INSENSITIVE: u8 = 0x01;
     pub const FLAG_NEGATED: u8 = 0x02;
+    pub const FLAG_NON_GREEDY: u8 = 0x04;
 };
 
 /// Compiled regex header (uploaded with pattern)

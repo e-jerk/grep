@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
 const cpu_gnu = @import("cpu_gnu");
+const pcre = @import("pcre");
 
 const SearchOptions = gpu.SearchOptions;
 
@@ -93,6 +94,11 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "-E") or std.mem.eql(u8, arg, "--extended-regexp")) {
             options.fixed_string = false;
             options.extended = true;
+            options.perl = false;
+        } else if (std.mem.eql(u8, arg, "-P") or std.mem.eql(u8, arg, "--perl-regexp")) {
+            options.fixed_string = false;
+            options.extended = false;
+            options.perl = true;
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count_only = true;
         } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--line-number")) {
@@ -275,6 +281,12 @@ pub fn main() !u8 {
                     'E' => {
                         options.fixed_string = false;
                         options.extended = true;
+                        options.perl = false;
+                    },
+                    'P' => {
+                        options.fixed_string = false;
+                        options.extended = false;
+                        options.perl = true;
                     },
                     'c' => count_only = true,
                     'n' => line_numbers = true,
@@ -448,6 +460,9 @@ fn doSearch(text: []const u8, pattern: []const u8, options: SearchOptions, alloc
             cpu_gnu.search(text, pattern, options, allocator)
         else
             cpu.search(text, pattern, options, allocator);
+    } else if (options.perl) {
+        // Use PCRE2 for Perl-compatible regex (-P flag)
+        return pcre.searchPcre(text, pattern, options, allocator);
     } else {
         return if (use_gnu)
             cpu_gnu.searchRegex(text, pattern, options, allocator)
@@ -1446,6 +1461,7 @@ fn printUsage() void {
         \\  -e, --regexp=PATTERN      use PATTERN for matching
         \\  -E, --extended-regexp     PATTERN is an extended regular expression (ERE)
         \\  -G, --basic-regexp        PATTERN is a basic regular expression (BRE)
+        \\  -P, --perl-regexp         PATTERN is a Perl-compatible regular expression (PCRE)
         \\  -F, --fixed-strings       PATTERN is a literal string (default)
         \\  -i, --ignore-case         ignore case distinctions in patterns and data
         \\  -w, --word-regexp         match only whole words
@@ -1501,6 +1517,7 @@ fn printUsage() void {
         \\  grep -i 'warning' *.log           Case-insensitive search
         \\  grep -E 'error|warning' *.log     Extended regex (ERE)
         \\  grep -G 'ab\+c' file.txt          Basic regex (BRE)
+        \\  grep -P '(?<=@)\w+' file.txt      Perl regex with lookbehind
         \\  cat file.txt | grep 'pattern'     Read from stdin
         \\  grep --gpu 'needle' haystack.txt  Force GPU acceleration
         \\
