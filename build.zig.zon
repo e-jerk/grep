@@ -12,8 +12,8 @@
         },
         // Regex engine for pattern matching
         .regex = .{
-            .url = "git+https://github.com/e-jerk/regex#bf3f7db91ab18d0782acf46fa39f170abb2670ad",
-            .hash = "e_jerk_regex-0.1.0-ex0qsUv2AADQ6ViebDG4UIHjxP9EAH7Ybws-O_VN62BB",
+            .url = "git+https://github.com/e-jerk/regex#22c202a01fb7f1791eede124fb3e83fdb84aa212",
+            .hash = "e_jerk_regex-0.1.0-ex0qsQ45AQBksJ7frlk3Dkg454hk112ASybOjeCSFLPx",
         },
         // Shared shader library (with PCRE lookahead/lookbehind support)
         .shaders_common = .{

@@ -251,6 +251,12 @@ fn convertState(state: regex_lib.State, bitmap_offset: *u32, bitmaps: []u32) Reg
         .group_start, .group_end => {
             gpu_state.group_idx = @intCast(state.data.group_idx);
         },
+        .lookahead_pos, .lookahead_neg, .lookbehind_pos, .lookbehind_neg => {
+            // For lookaround states, store sub-pattern start in out2 and fixed length in bitmap_offset
+            const la_data = state.data.lookaround;
+            gpu_state.out2 = @intCast(@min(la_data.sub_pattern_start, 0xFFFF));
+            gpu_state.bitmap_offset = la_data.sub_pattern_len;
+        },
         else => {},
     }
 
