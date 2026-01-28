@@ -483,3 +483,208 @@ test "regex: overlapping potential matches" {
     // Standard regex: non-overlapping matches = 2 (positions 0 and 2)
     try std.testing.expect(result.total_matches >= 2);
 }
+
+// ----------------------------------------------------------------------------
+// PCRE Extensions - grep -P (Perl-compatible regex)
+// Lookahead, lookbehind, and non-capturing groups
+// ----------------------------------------------------------------------------
+
+test "PCRE: positive lookahead (?=...)" {
+    const allocator = std.testing.allocator;
+    const text = "foobar foobaz foo";
+
+    // foo(?=bar) matches "foo" only when followed by "bar"
+    var result = try cpu.searchRegex(text, "foo(?=bar)", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), result.total_matches);
+}
+
+test "PCRE: negative lookahead (?!...)" {
+    const allocator = std.testing.allocator;
+    const text = "foobar foobaz foo";
+
+    // foo(?!bar) matches "foo" when NOT followed by "bar"
+    var result = try cpu.searchRegex(text, "foo(?!bar)", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    // Should match "foobaz" and "foo" but not "foobar"
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+test "PCRE: positive lookbehind (?<=...)" {
+    const allocator = std.testing.allocator;
+    const text = "foobar bazbar xbar";
+
+    // (?<=foo)bar matches "bar" only when preceded by "foo"
+    var result = try cpu.searchRegex(text, "(?<=foo)bar", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), result.total_matches);
+}
+
+test "PCRE: negative lookbehind (?<!...)" {
+    const allocator = std.testing.allocator;
+    const text = "foobar bazbar xbar";
+
+    // (?<!foo)bar matches "bar" when NOT preceded by "foo"
+    var result = try cpu.searchRegex(text, "(?<!foo)bar", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    // Should match "bazbar" and "xbar" but not "foobar"
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+test "PCRE: non-capturing group (?:...)" {
+    const allocator = std.testing.allocator;
+    const text = "foobaz barbaz";
+
+    // (?:foo|bar)baz - non-capturing alternation
+    var result = try cpu.searchRegex(text, "(?:foo|bar)baz", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+test "PCRE: lookahead with character class" {
+    const allocator = std.testing.allocator;
+    const text = "foo1 foo2 foox";
+
+    // Match "foo" followed by a digit
+    var result = try cpu.searchRegex(text, "foo(?=\\d)", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+test "PCRE: lookbehind with digit" {
+    const allocator = std.testing.allocator;
+    const text = "1foo 2foo xfoo";
+
+    // Match "foo" preceded by a digit
+    var result = try cpu.searchRegex(text, "(?<=\\d)foo", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+test "PCRE: combined lookahead and lookbehind" {
+    const allocator = std.testing.allocator;
+    const text = "axb ayb bxc byc";
+
+    // Match single character preceded by 'a' and followed by 'b'
+    var result = try cpu.searchRegex(text, "(?<=a).(?=b)", .{ .extended = true, .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 2), result.total_matches);
+}
+
+// ----------------------------------------------------------------------------
+// GPU PCRE Tests - Verify Metal backend handles lookaround correctly
+// ----------------------------------------------------------------------------
+
+test "metal: PCRE positive lookahead" {
+    if (!build_options.is_macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
+        std.debug.print("Metal init failed: {}, skipping test\n", .{err});
+        return err;
+    };
+    defer searcher.deinit();
+
+    // Generate enough data to trigger GPU execution
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(allocator);
+
+    // 1000 lines of "foobar" and 1000 lines of "foobaz"
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobar\n");
+    }
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobaz\n");
+    }
+
+    var result = try searcher.searchRegex(text_builder.items, "foo(?=bar)", .{ .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1000), result.total_matches);
+}
+
+test "metal: PCRE negative lookahead" {
+    if (!build_options.is_macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
+        std.debug.print("Metal init failed: {}, skipping test\n", .{err});
+        return err;
+    };
+    defer searcher.deinit();
+
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(allocator);
+
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobaz\n");
+    }
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobar\n");
+    }
+
+    var result = try searcher.searchRegex(text_builder.items, "foo(?!bar)", .{ .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1000), result.total_matches);
+}
+
+test "metal: PCRE positive lookbehind" {
+    if (!build_options.is_macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
+        std.debug.print("Metal init failed: {}, skipping test\n", .{err});
+        return err;
+    };
+    defer searcher.deinit();
+
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(allocator);
+
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobar\n");
+    }
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "bazbar\n");
+    }
+
+    var result = try searcher.searchRegex(text_builder.items, "(?<=foo)bar", .{ .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1000), result.total_matches);
+}
+
+test "metal: PCRE negative lookbehind" {
+    if (!build_options.is_macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
+        std.debug.print("Metal init failed: {}, skipping test\n", .{err});
+        return err;
+    };
+    defer searcher.deinit();
+
+    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    defer text_builder.deinit(allocator);
+
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "bazbar\n");
+    }
+    for (0..1000) |_| {
+        try text_builder.appendSlice(allocator, "foobar\n");
+    }
+
+    var result = try searcher.searchRegex(text_builder.items, "(?<!foo)bar", .{ .perl = true }, allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1000), result.total_matches);
+}

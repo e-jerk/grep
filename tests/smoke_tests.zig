@@ -126,6 +126,38 @@ pub fn main() !void {
             .data_generator = generateSparseMatchText,
             .expected_match_ratio = 0.0001,
         },
+        // Test 9: PCRE positive lookahead
+        .{
+            .name = "pcre_lookahead_pos",
+            .pattern = "foo(?=bar)",
+            .options = .{ .perl = true },
+            .data_generator = generateLookaheadText,
+            .expected_match_ratio = 0.003,
+        },
+        // Test 10: PCRE negative lookahead
+        .{
+            .name = "pcre_lookahead_neg",
+            .pattern = "foo(?!bar)",
+            .options = .{ .perl = true },
+            .data_generator = generateLookaheadText,
+            .expected_match_ratio = 0.003,
+        },
+        // Test 11: PCRE positive lookbehind
+        .{
+            .name = "pcre_lookbehind_pos",
+            .pattern = "(?<=foo)bar",
+            .options = .{ .perl = true },
+            .data_generator = generateLookbehindText,
+            .expected_match_ratio = 0.003,
+        },
+        // Test 12: PCRE negative lookbehind
+        .{
+            .name = "pcre_lookbehind_neg",
+            .pattern = "(?<!foo)bar",
+            .options = .{ .perl = true },
+            .data_generator = generateLookbehindText,
+            .expected_match_ratio = 0.003,
+        },
     };
 
     var results: [test_cases.len]TestResult = undefined;
@@ -453,9 +485,15 @@ fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const
     var total_time: i64 = 0;
     var matches: u64 = 0;
 
+    // Use regex search for PCRE or regex patterns, fixed string search otherwise
+    const use_regex = options.perl or !options.fixed_string;
+
     for (0..iterations) |_| {
         const start = std.time.milliTimestamp();
-        var result = try cpu.search(text, pattern, options, allocator);
+        var result = if (use_regex)
+            try cpu.searchRegex(text, pattern, options, allocator)
+        else
+            try cpu.search(text, pattern, options, allocator);
         const elapsed = std.time.milliTimestamp() - start;
         matches = result.total_matches;
         result.deinit();
@@ -477,9 +515,15 @@ fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []con
     var total_time: i64 = 0;
     var matches: u64 = 0;
 
+    // Use regex search for PCRE or regex patterns, fixed string search otherwise
+    const use_regex = options.perl or !options.fixed_string;
+
     for (0..iterations) |_| {
         const start = std.time.milliTimestamp();
-        var result = try searcher.search(text, pattern, options, allocator);
+        var result = if (use_regex)
+            try searcher.searchRegex(text, pattern, options, allocator)
+        else
+            try searcher.search(text, pattern, options, allocator);
         const elapsed = std.time.milliTimestamp() - start;
         matches = result.total_matches;
         result.deinit();
@@ -499,9 +543,15 @@ fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []co
     var total_time: i64 = 0;
     var matches: u64 = 0;
 
+    // Use regex search for PCRE or regex patterns, fixed string search otherwise
+    const use_regex = options.perl or !options.fixed_string;
+
     for (0..iterations) |_| {
         const start = std.time.milliTimestamp();
-        var result = try searcher.search(text, pattern, options, allocator);
+        var result = if (use_regex)
+            try searcher.searchRegex(text, pattern, options, allocator)
+        else
+            try searcher.search(text, pattern, options, allocator);
         const elapsed = std.time.milliTimestamp() - start;
         matches = result.total_matches;
         result.deinit();
@@ -670,4 +720,22 @@ fn generateWordList(allocator: std.mem.Allocator, size: usize, words: []const []
 
     @memset(text[pos..], ' ');
     return text;
+}
+
+fn generateLookaheadText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+    // Generate text with "foobar" and "foobaz" patterns for lookahead tests
+    const patterns = [_][]const u8{
+        "foobar", "foobaz", "fooqux", "barfoo", "bazfoo", "hello", "world",
+        "test", "data", "value", "string", "number", "buffer", "array",
+    };
+    return generateWordList(allocator, size, &patterns);
+}
+
+fn generateLookbehindText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+    // Generate text with "foobar" and "bazbar" patterns for lookbehind tests
+    const patterns = [_][]const u8{
+        "foobar", "bazbar", "xyzbar", "barfoo", "barbaz", "hello", "world",
+        "test", "data", "value", "string", "number", "buffer", "array",
+    };
+    return generateWordList(allocator, size, &patterns);
 }

@@ -61,7 +61,7 @@ grep -V "pattern" largefile.txt
 | `-F` fixed strings | ✓ | ✓ | ✓ | **7x** | Full GPU search |
 | `-E` extended regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
 | `-G` basic regex | ✓ | ✓ | ✓ | **5-10x** | GPU regex engine |
-| `-P` Perl regex | ✓ | — | — | CPU | PCRE2 (lookahead, lookbehind, etc.) |
+| `-P` Perl regex | ✓ | ✓ | ✓ | **5-10x** | GPU lookahead/lookbehind |
 | `-e` multiple patterns | ✓ | ✓ | ✓ | **5-10x** | GPU per-pattern |
 | `-n` line numbers | ✓ | ✓ | ✓ | **10x+** | GPU-computed line nums |
 | `-c` count only | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU count |
@@ -72,7 +72,6 @@ grep -V "pattern" largefile.txt
 | `-A/-B/-C` context lines | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU format |
 | `-r` recursive search | ✓ | ✓ | ✓ | **10x+** | GPU search per file |
 | `--color` output | ✓ | ✓ | ✓ | **10x+** | GPU search + ANSI format |
-| `-P` Perl regex | — | — | — | — | GNU fallback |
 
 **GPU Architecture**: The GPU performs all pattern matching and line number computation. CPU handles file I/O and output formatting only.
 
@@ -207,6 +206,7 @@ bash gnu-tests.sh   # GNU compatibility tests (42 tests)
 
 ## Recent Changes
 
+- **GPU PCRE Lookaround**: Full GPU support for Perl regex lookahead `(?=)`, `(?!)` and lookbehind `(?<=)`, `(?<!)` assertions
 - **GPU Regex Support**: Native Thompson NFA regex execution on Metal and Vulkan GPUs for `-E` extended regex patterns
 - **Context Lines**: Native `-A`, `-B`, `-C` support with proper group separators
 - **Recursive Search**: Native `-r` flag with combined options (`-rn`, `-ri`, `-rc`, `-rl`)
