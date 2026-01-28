@@ -1,14 +1,15 @@
 # Stage 1: Builder
 FROM alpine:3 AS builder
 
-# Install build dependencies including Vulkan
+# Install build dependencies including Vulkan and PCRE2
 RUN apk add --no-cache \
     curl \
     xz \
     shaderc \
     bash \
     vulkan-loader-dev \
-    vulkan-headers
+    vulkan-headers \
+    pcre2-dev
 
 # Install Zig 0.15.2 - architecture dependent
 ARG TARGETARCH
@@ -48,8 +49,8 @@ FROM alpine:3 AS runtime
 ARG TARGETARCH
 ARG BINARY_NAME=grep
 
-# Install Vulkan runtime and drivers
-RUN apk add --no-cache vulkan-loader mesa-vulkan-swrast && \
+# Install Vulkan runtime, drivers, and PCRE2
+RUN apk add --no-cache vulkan-loader mesa-vulkan-swrast pcre2 && \
     if [ "${TARGETARCH}" = "amd64" ]; then \
         apk add --no-cache mesa-vulkan-ati mesa-vulkan-intel || true; \
     elif [ "${TARGETARCH}" = "arm64" ]; then \
