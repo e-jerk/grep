@@ -23,7 +23,7 @@ struct SearchConfig {
     uint num_patterns;
     uint flags;
     uint positions_per_thread;
-    uint _pad1;
+    uint batch_offset;          // Starting position for this batch
     uint _pad2;
     uint _pad3;
 };
@@ -55,12 +55,13 @@ kernel void bmh_search(
     device MatchResult* results [[buffer(4)]],
     device atomic_uint* result_count [[buffer(5)]],
     device atomic_uint* total_matches [[buffer(6)]],
-    uint tid [[thread_position_in_grid]],
-    uint num_threads [[threads_per_grid]]
+    uint tid [[thread_position_in_grid]]
 ) {
     uint text_len = config->text_len;
     uint pattern_len = config->pattern_len;
     uint flags = config->flags;
+    uint chunk_size = config->positions_per_thread;
+    uint batch_offset = config->batch_offset;
 
     if (pattern_len == 0 || text_len < pattern_len) return;
 
@@ -68,9 +69,8 @@ kernel void bmh_search(
     bool word_boundary = (flags & FLAG_WORD_BOUNDARY) != 0;
     bool invert = (flags & FLAG_INVERT_MATCH) != 0;
 
-    // Calculate this thread's search range
-    uint chunk_size = (text_len + num_threads - 1) / num_threads;
-    uint start_pos = tid * chunk_size;
+    // Calculate this thread's search range using config-provided chunk size and batch offset
+    uint start_pos = batch_offset + tid * chunk_size;
     uint end_pos = min(start_pos + chunk_size + pattern_len - 1, text_len);
 
     if (start_pos >= text_len) return;
@@ -173,7 +173,7 @@ struct RegexSearchConfig {
     uint num_bitmaps;
     uint max_results;
     uint flags;
-    uint _pad;
+    uint line_offset;  // Batch offset for line numbers (for batched dispatch)
 };
 
 struct RegexMatchOutput {
@@ -279,33 +279,66 @@ kernel void regex_search_lines(
 
     bool invert = (config.flags & FLAG_INVERT_MATCH) != 0;
 
-    // Search for regex in this line
-    uint match_start, match_end;
-    bool found = regex_find(
-        &header,
-        states,
-        bitmaps,
-        text + line_start,
-        line_len,
-        0,
-        &match_start,
-        &match_end
-    );
+    // For invert mode, we just check if any match exists
+    if (invert) {
+        uint match_start, match_end;
+        bool found = regex_find(
+            &header,
+            states,
+            bitmaps,
+            text + line_start,
+            line_len,
+            0,
+            &match_start,
+            &match_end
+        );
 
-    // Apply invert logic
-    if (invert) found = !found;
+        // Record line if no match found (inverted)
+        if (!found) {
+            uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
+            atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
 
-    if (found) {
+            if (idx < config.max_results) {
+                results[idx].start = line_start;
+                results[idx].end = line_end;
+                results[idx].line_start = line_start;
+                results[idx].flags = 1;
+                results[idx].line_num = config.line_offset + gid + 1;
+            }
+        }
+        return;
+    }
+
+    // Normal mode: find all matches on this line
+    uint search_pos = 0;
+    while (search_pos < line_len) {
+        uint match_start, match_end;
+        bool found = regex_find(
+            &header,
+            states,
+            bitmaps,
+            text + line_start,
+            line_len,
+            search_pos,
+            &match_start,
+            &match_end
+        );
+
+        if (!found) break;
+
+        // Record this match
         uint idx = atomic_fetch_add_explicit(result_count, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(total_matches, 1, memory_order_relaxed);
 
         if (idx < config.max_results) {
-            results[idx].start = invert ? line_start : (line_start + match_start);
-            results[idx].end = invert ? line_end : (line_start + match_end);
+            results[idx].start = line_start + match_start;
+            results[idx].end = line_start + match_end;
             results[idx].line_start = line_start;
             results[idx].flags = 1;
-            // Line number is just the thread ID + 1 (1-based, one thread per line)
-            results[idx].line_num = gid + 1;
+            results[idx].line_num = config.line_offset + gid + 1;
         }
+
+        // Move past this match to find the next one
+        search_pos = (match_end > match_start) ? match_end : match_start + 1;
     }
 }

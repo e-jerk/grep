@@ -138,20 +138,9 @@ pub const MetalSearcher = struct {
             @memcpy(skip_ptr[0..256], &skip_table);
         }
 
-        // Create config buffer and copy data
-        const config = SearchConfig{
-            .text_len = @intCast(text.len),
-            .pattern_len = @intCast(pattern.len),
-            .num_patterns = 1,
-            .flags = options.toFlags(),
-            .positions_per_thread = 1,
-        };
+        // Create config buffer
         var config_buffer = self.device.newBufferWithLengthOptions(@sizeOf(SearchConfig), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer config_buffer.release();
-        if (config_buffer.contents()) |ptr| {
-            const config_ptr: *SearchConfig = @ptrCast(@alignCast(ptr));
-            config_ptr.* = config;
-        }
 
         // Create results buffer
         const results_size = @sizeOf(MatchResult) * MAX_RESULTS;
@@ -166,6 +155,25 @@ pub const MetalSearcher = struct {
         counters_ptr[0] = 0;
         counters_ptr[1] = 0;
 
+        // Use a conservative thread count to avoid GPU overload
+        // Each thread processes a larger chunk to keep total threads manageable
+        const MAX_THREADS: usize = 16384; // Well under Metal's limits
+        const chunk_size: u32 = @intCast(@max(64, (text.len + MAX_THREADS - 1) / MAX_THREADS));
+        const num_threads = @min(MAX_THREADS, (text.len + chunk_size - 1) / chunk_size);
+
+        // Set up config with calculated chunk size
+        if (config_buffer.contents()) |ptr| {
+            const config_ptr: *SearchConfig = @ptrCast(@alignCast(ptr));
+            config_ptr.* = SearchConfig{
+                .text_len = @intCast(text.len),
+                .pattern_len = @intCast(pattern.len),
+                .num_patterns = 1,
+                .flags = options.toFlags(),
+                .positions_per_thread = chunk_size,
+                .batch_offset = 0,
+            };
+        }
+
         var cmd_buffer = self.command_queue.commandBuffer() orelse return error.CommandBufferFailed;
         var encoder = cmd_buffer.computeCommandEncoder() orelse return error.EncoderFailed;
 
@@ -178,9 +186,8 @@ pub const MetalSearcher = struct {
         encoder.setBufferOffsetAtIndex(counters_buffer, 0, 5);
         encoder.setBufferOffsetAtIndex(counters_buffer, 4, 6);
 
-        const num_threads = @max(1, text.len / 64);
         const grid_size = mtl.MTLSize{ .width = num_threads, .height = 1, .depth = 1 };
-        const threadgroup_size = mtl.MTLSize{ .width = self.threads_per_group, .height = 1, .depth = 1 };
+        const threadgroup_size = mtl.MTLSize{ .width = @min(self.threads_per_group, num_threads), .height = 1, .depth = 1 };
 
         encoder.dispatchThreadsThreadsPerThreadgroup(grid_size, threadgroup_size);
         encoder.endEncoding();
@@ -316,29 +323,45 @@ pub const MetalSearcher = struct {
             @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
         }
 
-        // Execute regex matching
-        var cmd_buffer = self.command_queue.commandBuffer() orelse return error.CommandBufferFailed;
-        var encoder = cmd_buffer.computeCommandEncoder() orelse return error.EncoderFailed;
+        // Execute regex matching in batches (Metal max grid width is 65536)
+        const MAX_GRID_WIDTH: usize = 65536;
+        var batch_start: usize = 0;
 
-        encoder.setComputePipelineState(self.regex_pipeline);
-        encoder.setBufferOffsetAtIndex(text_buffer, 0, 0);
-        encoder.setBufferOffsetAtIndex(states_buffer, 0, 1);
-        encoder.setBufferOffsetAtIndex(bitmaps_buffer, 0, 2);
-        encoder.setBufferOffsetAtIndex(config_buffer, 0, 3);
-        encoder.setBufferOffsetAtIndex(header_buffer, 0, 4);
-        encoder.setBufferOffsetAtIndex(results_buffer, 0, 5);
-        encoder.setBufferOffsetAtIndex(counters_buffer, 0, 6);
-        encoder.setBufferOffsetAtIndex(counters_buffer, 4, 7);
-        encoder.setBufferOffsetAtIndex(line_offsets_buffer, 0, 8);
-        encoder.setBufferOffsetAtIndex(line_lengths_buffer, 0, 9);
+        while (batch_start < num_lines) {
+            const batch_size = @min(MAX_GRID_WIDTH, num_lines - batch_start);
 
-        const grid_size = mtl.MTLSize{ .width = num_lines, .height = 1, .depth = 1 };
-        const threadgroup_size = mtl.MTLSize{ .width = @min(self.threads_per_group, num_lines), .height = 1, .depth = 1 };
+            // Update config buffer with line_offset for this batch
+            if (config_buffer.contents()) |ptr| {
+                const cfg_ptr = @as(*RegexSearchConfig, @ptrCast(@alignCast(ptr)));
+                cfg_ptr.line_offset = @intCast(batch_start);
+            }
 
-        encoder.dispatchThreadsThreadsPerThreadgroup(grid_size, threadgroup_size);
-        encoder.endEncoding();
-        cmd_buffer.commit();
-        cmd_buffer.waitUntilCompleted();
+            var cmd_buffer = self.command_queue.commandBuffer() orelse return error.CommandBufferFailed;
+            var encoder = cmd_buffer.computeCommandEncoder() orelse return error.EncoderFailed;
+
+            encoder.setComputePipelineState(self.regex_pipeline);
+            encoder.setBufferOffsetAtIndex(text_buffer, 0, 0);
+            encoder.setBufferOffsetAtIndex(states_buffer, 0, 1);
+            encoder.setBufferOffsetAtIndex(bitmaps_buffer, 0, 2);
+            encoder.setBufferOffsetAtIndex(config_buffer, 0, 3);
+            encoder.setBufferOffsetAtIndex(header_buffer, 0, 4);
+            encoder.setBufferOffsetAtIndex(results_buffer, 0, 5);
+            encoder.setBufferOffsetAtIndex(counters_buffer, 0, 6);
+            encoder.setBufferOffsetAtIndex(counters_buffer, 4, 7);
+            // Offset into line arrays for this batch
+            encoder.setBufferOffsetAtIndex(line_offsets_buffer, batch_start * @sizeOf(u32), 8);
+            encoder.setBufferOffsetAtIndex(line_lengths_buffer, batch_start * @sizeOf(u32), 9);
+
+            const grid_size = mtl.MTLSize{ .width = batch_size, .height = 1, .depth = 1 };
+            const threadgroup_size = mtl.MTLSize{ .width = @min(self.threads_per_group, batch_size), .height = 1, .depth = 1 };
+
+            encoder.dispatchThreadsThreadsPerThreadgroup(grid_size, threadgroup_size);
+            encoder.endEncoding();
+            cmd_buffer.commit();
+            cmd_buffer.waitUntilCompleted();
+
+            batch_start += batch_size;
+        }
 
         const result_count = counters_ptr[0];
         const total_matches = counters_ptr[1];

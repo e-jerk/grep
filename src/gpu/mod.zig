@@ -33,7 +33,7 @@ pub const SearchConfig = extern struct {
     num_patterns: u32,
     flags: u32,
     positions_per_thread: u32,
-    _pad1: u32 = 0,
+    batch_offset: u32 = 0,
     _pad2: u32 = 0,
     _pad3: u32 = 0,
 };
@@ -151,7 +151,7 @@ pub const RegexSearchConfig = extern struct {
     num_bitmaps: u32,
     max_results: u32,
     flags: u32, // Standard SearchFlags
-    _pad: u32 = 0,
+    line_offset: u32 = 0, // Batch offset for line numbers (for batched dispatch)
 };
 
 /// GPU regex match result

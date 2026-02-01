@@ -77,27 +77,94 @@ grep -V "pattern" largefile.txt
 
 **Test Coverage**: 42/42 GNU compatibility tests passing
 
-## Options
+## Command Line Reference
 
-| Flag | Description |
-|------|-------------|
-| `-i, --ignore-case` | Case-insensitive matching |
-| `-w, --word-regexp` | Match whole words only |
-| `-v, --invert-match` | Invert match (show non-matching lines) |
-| `-F, --fixed-strings` | Treat pattern as fixed string |
-| `-n, --line-number` | Print line numbers |
-| `-c, --count` | Print only count of matching lines |
-| `-l, --files-with-matches` | Print only filenames with matches |
-| `-L, --files-without-match` | Print only filenames without matches |
-| `-q, --quiet, --silent` | Quiet mode (exit status only) |
-| `-o, --only-matching` | Print only matching parts |
-| `-e PATTERN` | Use PATTERN for matching |
-| `-A NUM` | Print NUM lines after match |
-| `-B NUM` | Print NUM lines before match |
-| `-C NUM` | Print NUM lines before and after match |
-| `-r, --recursive` | Recursive directory search |
-| `--color[=WHEN]` | Highlight matches (always/never/auto) |
-| `-V, --verbose` | Show timing and backend information |
+<details>
+<summary>Full --help output</summary>
+
+```
+Usage: grep [OPTION]... PATTERN [FILE]...
+Search for PATTERN in each FILE.
+If no FILE is given, read standard input.
+Example: grep -i 'hello world' menu.h main.c
+
+Pattern selection and interpretation:
+  -e, --regexp=PATTERN      use PATTERN for matching              [GPU+SIMD]
+  -E, --extended-regexp     PATTERN is extended regex (ERE)       [GPU+SIMD]
+  -G, --basic-regexp        PATTERN is basic regex (BRE)          [GPU+SIMD]
+  -P, --perl-regexp         PATTERN is Perl regex (PCRE)          [GPU+SIMD]
+                            supports lookahead (?=), lookbehind (?<=)
+  -F, --fixed-strings       PATTERN is a literal string (default) [GPU+SIMD]
+  -i, --ignore-case         case-insensitive matching             [GPU+SIMD]
+  -w, --word-regexp         match only whole words                [GPU+SIMD]
+  -v, --invert-match        select non-matching lines             [GPU+SIMD]
+
+Output control:
+  -A NUM, --after-context=NUM   print NUM lines after match       [GPU+SIMD]
+  -B NUM, --before-context=NUM  print NUM lines before match      [GPU+SIMD]
+  -C NUM, --context=NUM         print NUM lines before and after  [GPU+SIMD]
+  -c, --count               count matching lines per FILE         [GPU+SIMD]
+      --color[=WHEN]        highlight matches (always/never/auto) [GPU+SIMD]
+  -l, --files-with-matches  print filenames with matches          [GPU+SIMD]
+  -L, --files-without-match print filenames without matches       [GPU+SIMD]
+  -n, --line-number         print line numbers (GPU-computed)     [GPU+SIMD]
+  -o, --only-matching       print only matched parts              [GPU+SIMD]
+  -q, --quiet, --silent     suppress output (exit status only)    [GPU+SIMD]
+  -r, -R, --recursive       search directories recursively        [GPU+SIMD]
+  -V, --verbose             print backend and timing info
+
+Backend selection:
+  --auto                    auto-select optimal backend (default)
+  --cpu, --cpu-optimized    force CPU backend (SIMD-optimized)
+  --gnu                     force GNU grep backend (GPL, full features)
+  --gpu                     force GPU (Metal on macOS, Vulkan on Linux)
+  --metal                   force Metal backend (macOS only)
+  --vulkan                  force Vulkan backend
+
+GPU tuning (auto mode only):
+  --prefer-gpu              bias auto-selection toward GPU
+  --prefer-cpu              bias auto-selection toward CPU
+  --gpu-bias=NUM            fine-tune GPU preference (-10 to +10)
+  --min-gpu-size=SIZE       minimum input size for GPU (e.g., 128K)
+  --max-gpu-size=SIZE       maximum input size for GPU (e.g., 16M)
+
+Miscellaneous:
+  -h, --help                display this help and exit
+      --version             display version information and exit
+
+Optimization legend:
+  [GPU+SIMD]  GPU-accelerated (Metal/Vulkan) + SIMD-optimized CPU fallback
+  GPU uses parallel compute shaders for pattern matching
+  CPU uses Boyer-Moore-Horspool with 16/32-byte SIMD vectors
+
+Exit status: 0 if match found, 1 if no match, 2 if error.
+
+GPU Performance (typical speedups vs SIMD CPU):
+  Single char patterns:     ~17x    Case-insensitive (-i):  ~11x
+  Word boundary (-w):       ~8x     Fixed strings (-F):     ~7x
+  Extended regex (-E):      ~5-10x  Perl regex (-P):        ~5-10x
+
+Examples:
+  grep 'error' /var/log/syslog        Search for 'error' in syslog
+  grep -i 'warning' *.log             Case-insensitive search
+  grep -E 'error|warning' *.log       Extended regex (ERE)
+  grep -G 'ab\+c' file.txt            Basic regex (BRE)
+  grep -P '(?<=@)\w+' file.txt        Perl regex lookbehind
+  grep -P 'foo(?=bar)' file.txt       Perl regex lookahead
+  grep -rn 'TODO' src/                Recursive with line numbers
+  grep --gpu 'needle' haystack.txt    Force GPU acceleration
+```
+
+</details>
+
+## Build Variants
+
+| Variant | Description | Vulkan on macOS | `--gnu` flag |
+|---------|-------------|-----------------|--------------|
+| **pure** | Zig + SIMD + GPU only. No external dependencies. | No | Not available |
+| **gnu** | Includes GNU grep + Vulkan via MoltenVK. | Yes | Falls back to GNU grep |
+
+The gnu build enables Vulkan on macOS using MoltenVK, allowing both Metal and Vulkan backends on Mac.
 
 ## Backend Selection
 
@@ -105,10 +172,10 @@ grep -V "pattern" largefile.txt
 |------|-------------|
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
-| `--cpu` | Force CPU backend |
-| `--gnu` | Force GNU grep backend |
+| `--cpu` | Force CPU backend (SIMD-optimized) |
+| `--gnu` | Force GNU grep backend (gnu build only) |
 | `--metal` | Force Metal backend (macOS only) |
-| `--vulkan` | Force Vulkan backend |
+| `--vulkan` | Force Vulkan backend (macOS+gnu build, or Linux) |
 
 ## Architecture & Optimizations
 

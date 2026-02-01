@@ -1458,39 +1458,39 @@ fn printUsage() void {
         \\Example: grep -i 'hello world' menu.h main.c
         \\
         \\Pattern selection and interpretation:
-        \\  -e, --regexp=PATTERN      use PATTERN for matching
-        \\  -E, --extended-regexp     PATTERN is an extended regular expression (ERE)
-        \\  -G, --basic-regexp        PATTERN is a basic regular expression (BRE)
-        \\  -P, --perl-regexp         PATTERN is a Perl-compatible regular expression (PCRE)
-        \\  -F, --fixed-strings       PATTERN is a literal string (default)
-        \\  -i, --ignore-case         ignore case distinctions in patterns and data
-        \\  -w, --word-regexp         match only whole words
-        \\  -v, --invert-match        select non-matching lines
+        \\  -e, --regexp=PATTERN      use PATTERN for matching              [GPU+SIMD]
+        \\  -E, --extended-regexp     PATTERN is extended regex (ERE)       [GPU+SIMD]
+        \\  -G, --basic-regexp        PATTERN is basic regex (BRE)          [GPU+SIMD]
+        \\  -P, --perl-regexp         PATTERN is Perl regex (PCRE)          [GPU+SIMD]
+        \\                            supports lookahead (?=), lookbehind (?<=)
+        \\  -F, --fixed-strings       PATTERN is a literal string (default) [GPU+SIMD]
+        \\  -i, --ignore-case         case-insensitive matching             [GPU+SIMD]
+        \\  -w, --word-regexp         match only whole words                [GPU+SIMD]
+        \\  -v, --invert-match        select non-matching lines             [GPU+SIMD]
         \\
         \\Output control:
-        \\  -A NUM, --after-context=NUM   print NUM lines of trailing context
-        \\  -B NUM, --before-context=NUM  print NUM lines of leading context
-        \\  -C NUM, --context=NUM         print NUM lines of output context
-        \\  -c, --count               print only a count of matching lines per FILE
-        \\      --color[=WHEN]        use markers to highlight matching strings
-        \\                            WHEN is 'always', 'never', or 'auto'
-        \\  -l, --files-with-matches  print only names of FILEs with matches
-        \\  -L, --files-without-match print only names of FILEs without matches
-        \\  -n, --line-number         print line number with output lines
-        \\  -o, --only-matching       print only the matched (non-empty) parts
-        \\  -q, --quiet, --silent     suppress all normal output
-        \\  -r, -R, --recursive       search directories recursively
-        \\  -V, --verbose             print backend and timing information
+        \\  -A NUM, --after-context=NUM   print NUM lines after match       [GPU+SIMD]
+        \\  -B NUM, --before-context=NUM  print NUM lines before match      [GPU+SIMD]
+        \\  -C NUM, --context=NUM         print NUM lines before and after  [GPU+SIMD]
+        \\  -c, --count               count matching lines per FILE         [GPU+SIMD]
+        \\      --color[=WHEN]        highlight matches (always/never/auto) [GPU+SIMD]
+        \\  -l, --files-with-matches  print filenames with matches          [GPU+SIMD]
+        \\  -L, --files-without-match print filenames without matches       [GPU+SIMD]
+        \\  -n, --line-number         print line numbers (GPU-computed)     [GPU+SIMD]
+        \\  -o, --only-matching       print only matched parts              [GPU+SIMD]
+        \\  -q, --quiet, --silent     suppress output (exit status only)    [GPU+SIMD]
+        \\  -r, -R, --recursive       search directories recursively        [GPU+SIMD]
+        \\  -V, --verbose             print backend and timing info
         \\
         \\Backend selection:
         \\  --auto                    auto-select optimal backend (default)
-        \\  --cpu, --cpu-optimized    force optimized CPU backend (SIMD)
-        \\  --gnu                     force GNU grep backend (reference)
+        \\  --cpu, --cpu-optimized    force CPU backend (SIMD-optimized)
+        \\  --gnu                     force GNU grep backend (GPL, full features)
         \\  --gpu                     force GPU (Metal on macOS, Vulkan on Linux)
         \\  --metal                   force Metal backend (macOS only)
         \\  --vulkan                  force Vulkan backend
         \\
-        \\GPU tuning:
+        \\GPU tuning (auto mode only):
         \\  --prefer-gpu              bias auto-selection toward GPU
         \\  --prefer-cpu              bias auto-selection toward CPU
         \\  --gpu-bias=NUM            fine-tune GPU preference (-10 to +10)
@@ -1498,28 +1498,30 @@ fn printUsage() void {
         \\  --max-gpu-size=SIZE       maximum input size for GPU (e.g., 16M)
         \\
         \\Miscellaneous:
-        \\  -h, --help                display this help text and exit
+        \\  -h, --help                display this help and exit
         \\      --version             display version information and exit
         \\
-        \\When FILE is '-', read standard input. With no FILE, read standard input.
-        \\Exit status is 0 if any line is selected, 1 otherwise;
-        \\if any error occurs, the exit status is 2.
+        \\Optimization legend:
+        \\  [GPU+SIMD]  GPU-accelerated (Metal/Vulkan) + SIMD-optimized CPU fallback
+        \\  GPU uses parallel compute shaders for pattern matching
+        \\  CPU uses Boyer-Moore-Horspool with 16/32-byte SIMD vectors
         \\
-        \\GPU Performance (typical speedups vs CPU):
-        \\  Single char patterns:     ~10x
-        \\  Case-insensitive (-i):    ~8x
-        \\  Word boundary (-w):       ~7x
-        \\  Short patterns (2-4):     ~5x
-        \\  Long patterns (8+):       ~2x
+        \\Exit status: 0 if match found, 1 if no match, 2 if error.
+        \\
+        \\GPU Performance (typical speedups vs SIMD CPU):
+        \\  Single char patterns:     ~17x    Case-insensitive (-i):  ~11x
+        \\  Word boundary (-w):       ~8x     Fixed strings (-F):     ~7x
+        \\  Extended regex (-E):      ~5-10x  Perl regex (-P):        ~5-10x
         \\
         \\Examples:
-        \\  grep 'error' /var/log/syslog      Search for 'error' in syslog
-        \\  grep -i 'warning' *.log           Case-insensitive search
-        \\  grep -E 'error|warning' *.log     Extended regex (ERE)
-        \\  grep -G 'ab\+c' file.txt          Basic regex (BRE)
-        \\  grep -P '(?<=@)\w+' file.txt      Perl regex with lookbehind
-        \\  cat file.txt | grep 'pattern'     Read from stdin
-        \\  grep --gpu 'needle' haystack.txt  Force GPU acceleration
+        \\  grep 'error' /var/log/syslog        Search for 'error' in syslog
+        \\  grep -i 'warning' *.log             Case-insensitive search
+        \\  grep -E 'error|warning' *.log       Extended regex (ERE)
+        \\  grep -G 'ab\+c' file.txt            Basic regex (BRE)
+        \\  grep -P '(?<=@)\w+' file.txt        Perl regex lookbehind
+        \\  grep -P 'foo(?=bar)' file.txt       Perl regex lookahead
+        \\  grep -rn 'TODO' src/                Recursive with line numbers
+        \\  grep --gpu 'needle' haystack.txt    Force GPU acceleration
         \\
     ;
     _ = std.posix.write(std.posix.STDOUT_FILENO, help_text) catch {};
