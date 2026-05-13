@@ -78,6 +78,21 @@ pub fn main() !u8 {
     var force_no_filename = false;
     var force_filename = false;
     var byte_offset = false;
+    var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (include_patterns.items) |p| allocator.free(p);
+        include_patterns.deinit(allocator);
+    }
+    var exclude_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (exclude_patterns.items) |p| allocator.free(p);
+        exclude_patterns.deinit(allocator);
+    }
+    var exclude_dir_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (exclude_dir_patterns.items) |p| allocator.free(p);
+        exclude_dir_patterns.deinit(allocator);
+    }
     var config = AutoSelectConfig{};
 
     // Parse arguments
@@ -143,6 +158,21 @@ pub fn main() !u8 {
             only_matching = true;
         } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--recursive")) {
             recursive = true;
+        } else if (std.mem.eql(u8, arg, "--include") and i + 1 < args.len) {
+            i += 1;
+            try include_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--include=")) {
+            try include_patterns.append(allocator, try allocator.dupe(u8, arg["--include=".len..]));
+        } else if (std.mem.eql(u8, arg, "--exclude") and i + 1 < args.len) {
+            i += 1;
+            try exclude_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
+            try exclude_patterns.append(allocator, try allocator.dupe(u8, arg["--exclude=".len..]));
+        } else if (std.mem.eql(u8, arg, "--exclude-dir") and i + 1 < args.len) {
+            i += 1;
+            try exclude_dir_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--exclude-dir=")) {
+            try exclude_dir_patterns.append(allocator, try allocator.dupe(u8, arg["--exclude-dir=".len..]));
         } else if (std.mem.eql(u8, arg, "--color") or std.mem.eql(u8, arg, "--colour")) {
             color_mode = .always;
         } else if (std.mem.eql(u8, arg, "--color=always") or std.mem.eql(u8, arg, "--colour=always")) {
@@ -448,7 +478,7 @@ pub fn main() !u8 {
                     // In recursive mode, always show filenames
                     var recursive_opts = output_opts;
                     recursive_opts.show_filename = true;
-                    processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode);
+                    processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items);
                 } else {
                     const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
                     if (result.found) found_match = true;
@@ -1259,8 +1289,66 @@ fn isLikelyRarePattern(pattern: []const u8) bool {
     return false;
 }
 
+/// Simple glob matching (supports * and ?)
+fn matchGlob(text: []const u8, pattern: []const u8) bool {
+    var ti: usize = 0;
+    var pi: usize = 0;
+    var star_pi: ?usize = null;
+    var star_ti: usize = 0;
+
+    while (ti < text.len or pi < pattern.len) {
+        if (pi < pattern.len) {
+            switch (pattern[pi]) {
+                '?' => {
+                    if (ti >= text.len) return false;
+                    ti += 1;
+                    pi += 1;
+                },
+                '*' => {
+                    star_pi = pi;
+                    star_ti = ti;
+                    pi += 1;
+                },
+                else => {
+                    if (ti < text.len and text[ti] == pattern[pi]) {
+                        ti += 1;
+                        pi += 1;
+                    } else if (star_pi) |sp| {
+                        if (star_ti >= text.len) {
+                            return false;
+                        }
+                        pi = sp + 1;
+                        star_ti += 1;
+                        ti = star_ti;
+                    } else {
+                        return false;
+                    }
+                },
+            }
+        } else if (star_pi) |sp| {
+            if (star_ti >= text.len) {
+                return true;
+            }
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Check if a filename matches any pattern in the list
+fn matchesAnyPattern(name: []const u8, patterns: []const []const u8) bool {
+    for (patterns) |pat| {
+        if (matchGlob(name, pat)) return true;
+    }
+    return false;
+}
+
 /// Process a directory recursively
-fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool) void {
+fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool, include_patterns: []const []const u8, exclude_patterns: []const []const u8, exclude_dir_patterns: []const []const u8) void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
         if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ path, err });
         had_error.* = true;
@@ -1284,9 +1372,14 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
         if (entry.kind == .directory) {
             // Skip hidden directories (starting with .)
             if (entry.name.len > 0 and entry.name[0] == '.') continue;
+            // Check exclude-dir patterns
+            if (exclude_dir_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_dir_patterns)) continue;
             // Recurse into subdirectory
-            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode);
+            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns);
         } else if (entry.kind == .file) {
+            // Check include/exclude patterns
+            if (include_patterns.len > 0 and !matchesAnyPattern(entry.name, include_patterns)) continue;
+            if (exclude_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_patterns)) continue;
             // Process file
             const result = processFile(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts);
             if (result.found) found_match.* = true;
