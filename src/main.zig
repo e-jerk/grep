@@ -78,6 +78,7 @@ pub fn main() !u8 {
     var force_no_filename = false;
     var force_filename = false;
     var byte_offset = false;
+    var binary_files: BinaryFilesMode = .binary;
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -109,6 +110,36 @@ pub fn main() !u8 {
             options.invert_match = true;
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--no-messages")) {
             suppress_messages = true;
+        } else if (std.mem.eql(u8, arg, "-z") or std.mem.eql(u8, arg, "--null-data")) {
+            options.null_data = true;
+        } else if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--text")) {
+            binary_files = .text;
+        } else if (std.mem.eql(u8, arg, "-I")) {
+            binary_files = .without_match;
+        } else if (std.mem.eql(u8, arg, "--binary-files") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "binary")) {
+                binary_files = .binary;
+            } else if (std.mem.eql(u8, args[i], "without-match")) {
+                binary_files = .without_match;
+            } else if (std.mem.eql(u8, args[i], "text")) {
+                binary_files = .text;
+            } else {
+                std.debug.print("Invalid --binary-files value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--binary-files=")) {
+            const val = arg["--binary-files=".len..];
+            if (std.mem.eql(u8, val, "binary")) {
+                binary_files = .binary;
+            } else if (std.mem.eql(u8, val, "without-match")) {
+                binary_files = .without_match;
+            } else if (std.mem.eql(u8, val, "text")) {
+                binary_files = .text;
+            } else {
+                std.debug.print("Invalid --binary-files value: {s}\n", .{val});
+                return 2;
+            }
         } else if (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings")) {
             options.fixed_string = true;
             options.extended = false;
@@ -371,6 +402,9 @@ pub fn main() !u8 {
                     'q' => quiet_mode = true,
                     'o' => only_matching = true,
                     'r', 'R' => recursive = true,
+                    'z' => options.null_data = true,
+                    'a' => binary_files = .text,
+                    'I' => binary_files = .without_match,
                     else => {
                         valid = false;
                         break;
@@ -451,6 +485,8 @@ pub fn main() !u8 {
         .max_count = max_count,
         .byte_offset = byte_offset,
         .lines_output = &lines_output,
+        .null_data = options.null_data,
+        .binary_files = binary_files,
     };
 
     // Process each file or stdin
@@ -512,6 +548,12 @@ const ColorMode = enum {
     auto,
 };
 
+const BinaryFilesMode = enum {
+    binary, // default: print "Binary file matches" and skip
+    without_match, // -I: treat as non-matching
+    text, // -a: treat as text
+};
+
 const OutputOptions = struct {
     count_only: bool = false,
     line_numbers: bool = false,
@@ -527,6 +569,8 @@ const OutputOptions = struct {
     max_count: ?usize = null,
     byte_offset: bool = false,
     lines_output: *usize = undefined, // mutable counter for -m
+    null_data: bool = false, // -z: use NUL as line delimiter
+    binary_files: BinaryFilesMode = .binary,
 };
 
 // ANSI color escape codes
@@ -535,6 +579,14 @@ const COLOR_RESET = "\x1b[m";
 const COLOR_FILENAME = "\x1b[35m"; // Magenta for filename
 const COLOR_LINE_NUM = "\x1b[32m"; // Green for line number
 const COLOR_SEP = "\x1b[36m"; // Cyan for separator
+
+fn getLineTerminator(null_data: bool) []const u8 {
+    return if (null_data) &[_]u8{0} else "\n";
+}
+
+fn writeLineTerminator(null_data: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, getLineTerminator(null_data)) catch {};
+}
 
 /// Filter matches to only include whole-line matches (-x)
 fn filterLineRegexp(text: []const u8, result: gpu.SearchResult, allocator: std.mem.Allocator) !gpu.SearchResult {
@@ -1444,7 +1496,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     const first_pattern = if (all_patterns.len > 0) all_patterns[0] else "";
 
     // Select backend using hardware-adjusted config
-    const backend: gpu.Backend = switch (backend_mode) {
+    var backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(first_pattern, options, file_size, adjusted_config),
         .gpu => if (build_options.is_macos) .metal else .vulkan,
         .cpu, .cpu_gnu => .cpu, // Both CPU backends use .cpu for dispatch
@@ -1468,6 +1520,41 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         return .{ .found = false, .had_error = true };
     };
     defer allocator.free(text);
+
+    // Check for binary files (unless -a/--text forces text mode, or -z where nulls are expected)
+    const is_binary = if (output_opts.binary_files != .text and !options.null_data) blk: {
+        // Check first 8KB for null bytes
+        const check_len = @min(text.len, 8192);
+        var has_null = false;
+        for (text[0..check_len]) |c| {
+            if (c == 0) {
+                has_null = true;
+                break;
+            }
+        }
+        break :blk has_null;
+    } else false;
+
+    if (is_binary) {
+        switch (output_opts.binary_files) {
+            .without_match => return .{ .found = false, .had_error = false },
+            .binary => {
+                if (!output_opts.suppress_messages) {
+                    std.debug.print("Binary file {s} matches\n", .{filepath});
+                }
+                return .{ .found = true, .had_error = false };
+            },
+            .text => {}, // proceed normally
+        }
+    }
+
+    // For -z (null-data), force CPU backend since GPU shaders don't support \0 delimiter
+    if (options.null_data) {
+        backend = .cpu;
+        if (verbose) {
+            std.debug.print("-z mode: forcing CPU backend\n", .{});
+        }
+    }
 
     // For multiple patterns, always use CPU multi-pattern search
     var result = if (all_patterns.len > 1)
@@ -1564,7 +1651,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         if (!found) {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+                writeLineTerminator(output_opts.null_data);
             }
         }
         return .{ .found = found, .had_error = false };
@@ -1575,7 +1662,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         if (found) {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+                writeLineTerminator(output_opts.null_data);
             }
         }
         return .{ .found = found, .had_error = false };
@@ -1592,7 +1679,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
             }
         }
         var count_buf: [32]u8 = undefined;
-        const count_str = std.fmt.bufPrint(&count_buf, "{d}\n", .{line_count}) catch return .{ .found = found, .had_error = false };
+        const term = getLineTerminator(output_opts.null_data);
+        const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ line_count, term }) catch return .{ .found = found, .had_error = false };
         if (output_opts.show_filename) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
             _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
@@ -1615,8 +1703,9 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 const line_num = if (match.line_num > 0) match.line_num else blk: {
                     var ln: u32 = 1;
                     var pos: usize = 0;
+                    const delim = getLineTerminator(output_opts.null_data)[0];
                     while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') ln += 1;
+                        if (text[pos] == delim) ln += 1;
                     }
                     break :blk ln;
                 };
@@ -1635,7 +1724,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_RESET) catch {};
                 }
             }
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            writeLineTerminator(output_opts.null_data);
         }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
@@ -1646,14 +1735,22 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         var last_line_start: u32 = std.math.maxInt(u32);
         var current_line_num: u32 = 1;
         var last_line_counted: u32 = 0;
+        const delim = getLineTerminator(output_opts.null_data)[0];
 
         for (result.matches) |match| {
-            if (match.line_start != last_line_start) {
-                last_line_start = match.line_start;
+            // Compute actual line start: for -z, find previous \0; otherwise use match.line_start
+            const actual_line_start = if (output_opts.null_data) blk: {
+                var start = match.position;
+                while (start > 0 and text[start - 1] != 0) start -= 1;
+                break :blk @as(u32, @intCast(start));
+            } else match.line_start;
+
+            if (actual_line_start != last_line_start) {
+                last_line_start = actual_line_start;
 
                 // Find line end
-                var line_end = match.line_start;
-                while (line_end < text.len and text[line_end] != '\n') line_end += 1;
+                var line_end = actual_line_start;
+                while (line_end < text.len and text[line_end] != delim) line_end += 1;
 
                 if (output_opts.show_filename) {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
@@ -1666,13 +1763,13 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 }
                 if (output_opts.line_numbers) {
                     // Use GPU-computed line number if available, otherwise fall back to CPU computation
-                    const line_num = if (match.line_num > 0) match.line_num else blk: {
-                        // Fall back to counting newlines on CPU
+                    const line_num = if (match.line_num > 0 and !output_opts.null_data) match.line_num else blk: {
+                        // Fall back to counting delimiters on CPU
                         var pos: usize = last_line_counted;
-                        while (pos < match.line_start) : (pos += 1) {
-                            if (text[pos] == '\n') current_line_num += 1;
+                        while (pos < actual_line_start) : (pos += 1) {
+                            if (text[pos] == delim) current_line_num += 1;
                         }
-                        last_line_counted = match.line_start;
+                        last_line_counted = actual_line_start;
                         break :blk current_line_num;
                     };
                     var num_buf: [16]u8 = undefined;
@@ -1680,8 +1777,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
-                outputLineWithColor(text, match.line_start, line_end, result.matches, output_opts.color_mode == .always);
-                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+                outputLineWithColor(text, actual_line_start, line_end, result.matches, output_opts.color_mode == .always);
+                writeLineTerminator(output_opts.null_data);
             }
         }
     }
