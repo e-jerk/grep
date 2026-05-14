@@ -84,6 +84,7 @@ pub fn main() !u8 {
     var null_terminated = false;
     var line_buffered = false;
     var label: ?[]const u8 = null;
+    var group_separator: ?[]const u8 = "--";
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -320,6 +321,13 @@ pub fn main() !u8 {
             };
             before_context = ctx_val;
             after_context = ctx_val;
+        } else if (std.mem.eql(u8, arg, "--group-separator") and i + 1 < args.len) {
+            i += 1;
+            group_separator = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--group-separator=")) {
+            group_separator = arg["--group-separator=".len..];
+        } else if (std.mem.eql(u8, arg, "--no-group-separator")) {
+            group_separator = null;
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--regexp")) {
             // -e PATTERN: add pattern
             i += 1;
@@ -533,6 +541,7 @@ pub fn main() !u8 {
         .null_terminated = null_terminated,
         .line_buffered = line_buffered,
         .label = label,
+        .group_separator = group_separator,
     };
 
     // Process each file or stdin
@@ -634,6 +643,7 @@ const OutputOptions = struct {
     null_terminated: bool = false, // -Z: use NUL after filenames
     line_buffered: bool = false, // --line-buffered: flush after each line
     label: ?[]const u8 = null, // --label: label for stdin in multi-file context
+    group_separator: ?[]const u8 = "--", // --group-separator=SEP
 };
 
 // ANSI color escape codes
@@ -971,7 +981,10 @@ fn outputWithContext(
     for (ranges.items) |range| {
         // Print separator between groups
         if (!first_range) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "--\n") catch {};
+            if (output_opts.group_separator) |sep| {
+                _ = std.posix.write(std.posix.STDOUT_FILENO, sep) catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            }
         }
         first_range = false;
 
