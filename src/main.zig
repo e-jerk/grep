@@ -82,6 +82,7 @@ pub fn main() !u8 {
     var directory_action: DirectoryAction = .read;
     var null_terminated = false;
     var line_buffered = false;
+    var label: ?[]const u8 = null;
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -119,6 +120,11 @@ pub fn main() !u8 {
             null_terminated = true;
         } else if (std.mem.eql(u8, arg, "--line-buffered")) {
             line_buffered = true;
+        } else if (std.mem.eql(u8, arg, "--label") and i + 1 < args.len) {
+            i += 1;
+            label = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--label=")) {
+            label = arg["--label=".len..];
         } else if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--text")) {
             binary_files = .text;
         } else if (std.mem.eql(u8, arg, "-I")) {
@@ -521,11 +527,13 @@ pub fn main() !u8 {
         .directory_action = directory_action,
         .null_terminated = null_terminated,
         .line_buffered = line_buffered,
+        .label = label,
     };
 
     // Process each file or stdin
     if (read_stdin) {
-        const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, null);
+        const stdin_label: ?[]const u8 = if (label) |l| l else if (show_filename) "(standard input)" else null;
+        const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, stdin_label);
         if (result.found) found_match = true;
         if (result.had_error) had_error = true;
         // For quiet mode, exit early on first match
@@ -534,7 +542,8 @@ pub fn main() !u8 {
         for (files.items) |filepath| {
             // Handle "-" as stdin
             if (std.mem.eql(u8, filepath, "-")) {
-                const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, if (show_filename) "(standard input)" else null);
+                const stdin_label: ?[]const u8 = if (label) |l| l else if (show_filename) "(standard input)" else null;
+                const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, stdin_label);
                 if (result.found) found_match = true;
                 if (result.had_error) had_error = true;
             } else {
@@ -623,6 +632,7 @@ const OutputOptions = struct {
     directory_action: DirectoryAction = .read, // -d ACTION
     null_terminated: bool = false, // -Z: use NUL after filenames
     line_buffered: bool = false, // --line-buffered: flush after each line
+    label: ?[]const u8 = null, // --label: label for stdin in multi-file context
 };
 
 // ANSI color escape codes
