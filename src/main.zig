@@ -72,19 +72,93 @@ pub fn main() !u8 {
     var before_context: u32 = 0;
     var after_context: u32 = 0;
     var recursive = false;
+    var follow_symlinks = false; // -R vs -r distinction
     var color_mode: ColorMode = .never;
+    var suppress_messages = false;
+    var max_count: ?usize = null;
+    var force_no_filename = false;
+    var force_filename = false;
+    var byte_offset = false;
+    var binary_files: BinaryFilesMode = .binary;
+    var directory_action: DirectoryAction = .read;
+    var device_action: DeviceAction = .read;
+    var null_terminated = false;
+    var line_buffered = false;
+    var label: ?[]const u8 = null;
+    var group_separator: ?[]const u8 = "--";
+    var initial_tab = false;
+    var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (include_patterns.items) |p| allocator.free(p);
+        include_patterns.deinit(allocator);
+    }
+    var exclude_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (exclude_patterns.items) |p| allocator.free(p);
+        exclude_patterns.deinit(allocator);
+    }
+    var exclude_dir_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    defer {
+        for (exclude_dir_patterns.items) |p| allocator.free(p);
+        exclude_dir_patterns.deinit(allocator);
+    }
     var config = AutoSelectConfig{};
 
     // Parse arguments
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case")) {
+        if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case") or std.mem.eql(u8, arg, "-y")) {
             options.case_insensitive = true;
         } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--word-regexp")) {
             options.word_boundary = true;
+        } else if (std.mem.eql(u8, arg, "-x") or std.mem.eql(u8, arg, "--line-regexp")) {
+            options.line_regexp = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--invert-match")) {
             options.invert_match = true;
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--no-messages")) {
+            suppress_messages = true;
+        } else if (std.mem.eql(u8, arg, "-z") or std.mem.eql(u8, arg, "--null-data")) {
+            options.null_data = true;
+        } else if (std.mem.eql(u8, arg, "-Z") or std.mem.eql(u8, arg, "--null")) {
+            null_terminated = true;
+        } else if (std.mem.eql(u8, arg, "--line-buffered")) {
+            line_buffered = true;
+        } else if (std.mem.eql(u8, arg, "-T") or std.mem.eql(u8, arg, "--initial-tab")) {
+            initial_tab = true;
+        } else if (std.mem.eql(u8, arg, "--label") and i + 1 < args.len) {
+            i += 1;
+            label = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--label=")) {
+            label = arg["--label=".len..];
+        } else if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--text")) {
+            binary_files = .text;
+        } else if (std.mem.eql(u8, arg, "-I")) {
+            binary_files = .without_match;
+        } else if (std.mem.eql(u8, arg, "--binary-files") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "binary")) {
+                binary_files = .binary;
+            } else if (std.mem.eql(u8, args[i], "without-match")) {
+                binary_files = .without_match;
+            } else if (std.mem.eql(u8, args[i], "text")) {
+                binary_files = .text;
+            } else {
+                std.debug.print("Invalid --binary-files value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--binary-files=")) {
+            const val = arg["--binary-files=".len..];
+            if (std.mem.eql(u8, val, "binary")) {
+                binary_files = .binary;
+            } else if (std.mem.eql(u8, val, "without-match")) {
+                binary_files = .without_match;
+            } else if (std.mem.eql(u8, val, "text")) {
+                binary_files = .text;
+            } else {
+                std.debug.print("Invalid --binary-files value: {s}\n", .{val});
+                return 2;
+            }
         } else if (std.mem.eql(u8, arg, "-F") or std.mem.eql(u8, arg, "--fixed-strings")) {
             options.fixed_string = true;
             options.extended = false;
@@ -99,10 +173,31 @@ pub fn main() !u8 {
             options.fixed_string = false;
             options.extended = false;
             options.perl = true;
+        } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--max-count")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Option -m requires an argument\n", .{});
+                return 2;
+            }
+            max_count = std.fmt.parseInt(usize, args[i], 10) catch {
+                std.debug.print("Invalid -m value: {s}\n", .{args[i]});
+                return 2;
+            };
+        } else if (std.mem.startsWith(u8, arg, "--max-count=")) {
+            max_count = std.fmt.parseInt(usize, arg["--max-count=".len..], 10) catch {
+                std.debug.print("Invalid --max-count value: {s}\n", .{arg["--max-count=".len..]});
+                return 2;
+            };
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--count")) {
             count_only = true;
         } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--line-number")) {
             line_numbers = true;
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--no-filename")) {
+            force_no_filename = true;
+        } else if (std.mem.eql(u8, arg, "-H") or std.mem.eql(u8, arg, "--with-filename")) {
+            force_filename = true;
+        } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--byte-offset")) {
+            byte_offset = true;
         } else if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--files-with-matches")) {
             files_with_matches = true;
         } else if (std.mem.eql(u8, arg, "-L") or std.mem.eql(u8, arg, "--files-without-match")) {
@@ -111,8 +206,71 @@ pub fn main() !u8 {
             quiet_mode = true;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--only-matching")) {
             only_matching = true;
-        } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--recursive")) {
+        } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--recursive")) {
             recursive = true;
+            follow_symlinks = false;
+        } else if (std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--dereference-recursive")) {
+            recursive = true;
+            follow_symlinks = true;
+        } else if (std.mem.eql(u8, arg, "-d") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "read")) {
+                directory_action = .read;
+            } else if (std.mem.eql(u8, args[i], "skip")) {
+                directory_action = .skip;
+            } else if (std.mem.eql(u8, args[i], "recurse")) {
+                directory_action = .recurse;
+            } else {
+                std.debug.print("Invalid -d value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--directories=")) {
+            const val = arg["--directories=".len..];
+            if (std.mem.eql(u8, val, "read")) {
+                directory_action = .read;
+            } else if (std.mem.eql(u8, val, "skip")) {
+                directory_action = .skip;
+            } else if (std.mem.eql(u8, val, "recurse")) {
+                directory_action = .recurse;
+            } else {
+                std.debug.print("Invalid --directories value: {s}\n", .{val});
+                return 2;
+            }
+        } else if (std.mem.eql(u8, arg, "--devices") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "read")) {
+                device_action = .read;
+            } else if (std.mem.eql(u8, args[i], "skip")) {
+                device_action = .skip;
+            } else {
+                std.debug.print("Invalid --devices value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--devices=")) {
+            const val = arg["--devices=".len..];
+            if (std.mem.eql(u8, val, "read")) {
+                device_action = .read;
+            } else if (std.mem.eql(u8, val, "skip")) {
+                device_action = .skip;
+            } else {
+                std.debug.print("Invalid --devices value: {s}\n", .{val});
+                return 2;
+            }
+        } else if (std.mem.eql(u8, arg, "--include") and i + 1 < args.len) {
+            i += 1;
+            try include_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--include=")) {
+            try include_patterns.append(allocator, try allocator.dupe(u8, arg["--include=".len..]));
+        } else if (std.mem.eql(u8, arg, "--exclude") and i + 1 < args.len) {
+            i += 1;
+            try exclude_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--exclude=")) {
+            try exclude_patterns.append(allocator, try allocator.dupe(u8, arg["--exclude=".len..]));
+        } else if (std.mem.eql(u8, arg, "--exclude-dir") and i + 1 < args.len) {
+            i += 1;
+            try exclude_dir_patterns.append(allocator, try allocator.dupe(u8, args[i]));
+        } else if (std.mem.startsWith(u8, arg, "--exclude-dir=")) {
+            try exclude_dir_patterns.append(allocator, try allocator.dupe(u8, arg["--exclude-dir=".len..]));
         } else if (std.mem.eql(u8, arg, "--color") or std.mem.eql(u8, arg, "--colour")) {
             color_mode = .always;
         } else if (std.mem.eql(u8, arg, "--color=always") or std.mem.eql(u8, arg, "--colour=always")) {
@@ -187,6 +345,13 @@ pub fn main() !u8 {
             };
             before_context = ctx_val;
             after_context = ctx_val;
+        } else if (std.mem.eql(u8, arg, "--group-separator") and i + 1 < args.len) {
+            i += 1;
+            group_separator = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--group-separator=")) {
+            group_separator = arg["--group-separator=".len..];
+        } else if (std.mem.eql(u8, arg, "--no-group-separator")) {
+            group_separator = null;
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--regexp")) {
             // -e PATTERN: add pattern
             i += 1;
@@ -200,6 +365,15 @@ pub fn main() !u8 {
             try patterns.append(allocator, arg[2..]);
         } else if (std.mem.startsWith(u8, arg, "--regexp=")) {
             try patterns.append(allocator, arg["--regexp=".len..]);
+        } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Option -f requires a file argument\n", .{});
+                return 2;
+            }
+            try readPatternsFromFile(allocator, args[i], &patterns, suppress_messages);
+        } else if (std.mem.startsWith(u8, arg, "--file=")) {
+            try readPatternsFromFile(allocator, arg["--file=".len..], &patterns, suppress_messages);
         } else if (std.mem.eql(u8, arg, "--cpu") or std.mem.eql(u8, arg, "--cpu-optimized")) {
             backend_mode = .cpu;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -254,6 +428,13 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "--version")) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, "grep (e-jerk GPU-accelerated) 1.0\n") catch {};
             return 0;
+        } else if (arg[0] == '-' and arg.len > 1 and std.ascii.isDigit(arg[1])) {
+            const ctx_val = std.fmt.parseInt(u32, arg[1..], 10) catch {
+                std.debug.print("Invalid -NUM value: {s}\n", .{arg});
+                return 2;
+            };
+            before_context = ctx_val;
+            after_context = ctx_val;
         } else if (arg[0] != '-' or std.mem.eql(u8, arg, "-")) {
             // Non-option argument or "-" for stdin
             if (patterns.items.len == 0) {
@@ -295,6 +476,9 @@ pub fn main() !u8 {
                     'q' => quiet_mode = true,
                     'o' => only_matching = true,
                     'r', 'R' => recursive = true,
+                    'z' => options.null_data = true,
+                    'a' => binary_files = .text,
+                    'I' => binary_files = .without_match,
                     else => {
                         valid = false;
                         break;
@@ -351,7 +535,8 @@ pub fn main() !u8 {
     // Track whether we found any matches (for exit code)
     var found_match = false;
     var had_error = false;
-    const show_filename = files.items.len > 1;
+    var lines_output: usize = 0;
+    const show_filename = if (force_no_filename) false else if (force_filename) true else files_with_matches or files_without_match or files.items.len > 1;
 
     // Resolve color mode: 'auto' checks if stdout is a tty
     const effective_color_mode: ColorMode = switch (color_mode) {
@@ -370,11 +555,25 @@ pub fn main() !u8 {
         .before_context = before_context,
         .after_context = after_context,
         .color_mode = effective_color_mode,
+        .suppress_messages = suppress_messages,
+        .max_count = max_count,
+        .byte_offset = byte_offset,
+        .lines_output = &lines_output,
+        .null_data = options.null_data,
+        .binary_files = binary_files,
+        .directory_action = directory_action,
+        .device_action = device_action,
+        .null_terminated = null_terminated,
+        .line_buffered = line_buffered,
+        .label = label,
+        .group_separator = group_separator,
+        .initial_tab = initial_tab,
     };
 
     // Process each file or stdin
     if (read_stdin) {
-        const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, null);
+        const stdin_label: ?[]const u8 = if (label) |l| l else if (show_filename) "(standard input)" else null;
+        const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, stdin_label);
         if (result.found) found_match = true;
         if (result.had_error) had_error = true;
         // For quiet mode, exit early on first match
@@ -383,30 +582,36 @@ pub fn main() !u8 {
         for (files.items) |filepath| {
             // Handle "-" as stdin
             if (std.mem.eql(u8, filepath, "-")) {
-                const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, if (show_filename) "(standard input)" else null);
+                const stdin_label: ?[]const u8 = if (label) |l| l else if (show_filename) "(standard input)" else null;
+                const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, stdin_label);
                 if (result.found) found_match = true;
                 if (result.had_error) had_error = true;
-            } else if (recursive) {
+            } else {
                 // Check if path is a directory
                 const stat = std.fs.cwd().statFile(filepath) catch |err| {
-                    std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+                    if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
                     had_error = true;
                     continue;
                 };
                 if (stat.kind == .directory) {
-                    // In recursive mode, always show filenames
-                    var recursive_opts = output_opts;
-                    recursive_opts.show_filename = true;
-                    processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode);
+                    if (recursive or output_opts.directory_action == .recurse) {
+                        // In recursive mode, always show filenames
+                        var recursive_opts = output_opts;
+                        recursive_opts.show_filename = true;
+                        processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items, follow_symlinks);
+                    } else if (output_opts.directory_action == .skip) {
+                        // Skip directories silently
+                    } else {
+                        // Try to read directory as a file (will usually fail)
+                        const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
+                        if (result.found) found_match = true;
+                        if (result.had_error) had_error = true;
+                    }
                 } else {
                     const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
                     if (result.found) found_match = true;
                     if (result.had_error) had_error = true;
                 }
-            } else {
-                const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
-                if (result.found) found_match = true;
-                if (result.had_error) had_error = true;
             }
             // For quiet mode, exit early on first match
             if (quiet_mode and found_match) return 0;
@@ -431,6 +636,23 @@ const ColorMode = enum {
     auto,
 };
 
+const BinaryFilesMode = enum {
+    binary, // default: print "Binary file matches" and skip
+    without_match, // -I: treat as non-matching
+    text, // -a: treat as text
+};
+
+const DirectoryAction = enum {
+    read, // -d read: read directories as if they were files
+    skip, // -d skip: skip directories silently
+    recurse, // -d recurse or -r: recurse into directories
+};
+
+const DeviceAction = enum {
+    read, // --devices read: read devices as if they were ordinary files (default)
+    skip, // --devices skip: silently skip devices, FIFOs and sockets
+};
+
 const OutputOptions = struct {
     count_only: bool = false,
     line_numbers: bool = false,
@@ -442,6 +664,19 @@ const OutputOptions = struct {
     before_context: u32 = 0, // -B N: show N lines before match
     after_context: u32 = 0, // -A N: show N lines after match
     color_mode: ColorMode = .never,
+    suppress_messages: bool = false,
+    max_count: ?usize = null,
+    byte_offset: bool = false,
+    lines_output: *usize = undefined, // mutable counter for -m
+    null_data: bool = false, // -z: use NUL as line delimiter
+    binary_files: BinaryFilesMode = .binary,
+    directory_action: DirectoryAction = .read, // -d ACTION
+    device_action: DeviceAction = .read, // --devices=ACTION
+    null_terminated: bool = false, // -Z: use NUL after filenames
+    line_buffered: bool = false, // --line-buffered: flush after each line
+    label: ?[]const u8 = null, // --label: label for stdin in multi-file context
+    group_separator: ?[]const u8 = "--", // --group-separator=SEP
+    initial_tab: bool = false, // -T/--initial-tab: align tabs in output
 };
 
 // ANSI color escape codes
@@ -451,24 +686,142 @@ const COLOR_FILENAME = "\x1b[35m"; // Magenta for filename
 const COLOR_LINE_NUM = "\x1b[32m"; // Green for line number
 const COLOR_SEP = "\x1b[36m"; // Cyan for separator
 
+fn getLineTerminator(null_data: bool) []const u8 {
+    return if (null_data) &[_]u8{0} else "\n";
+}
+
+fn writeLineTerminator(null_data: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, getLineTerminator(null_data)) catch {};
+}
+
+fn getFilenameSeparator(null_terminated: bool) []const u8 {
+    return if (null_terminated) &[_]u8{0} else ":";
+}
+
+fn writeFilenameSeparator(null_terminated: bool, initial_tab: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(null_terminated)) catch {};
+    if (initial_tab) {
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\t") catch {};
+    }
+}
+
+fn writeFilenameTerminator(null_terminated: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, if (null_terminated) &[_]u8{0} else "\n") catch {};
+}
+
+fn flushStdout() void {
+    // Since we write directly to the fd via posix.write, output is already
+    // unbuffered at the libc level. fsync may help on some platforms.
+    _ = std.posix.fsync(std.posix.STDOUT_FILENO) catch {};
+}
+
+/// Filter matches to only include whole-line matches (-x)
+fn filterLineRegexp(text: []const u8, result: gpu.SearchResult, allocator: std.mem.Allocator) !gpu.SearchResult {
+    if (result.matches.len == 0) return result;
+
+    var filtered: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    for (result.matches) |match| {
+        const match_start = match.position;
+        const match_end = match_start + match.match_len;
+        const line_start = match.line_start;
+        // Find line end
+        var line_end = text.len;
+        var j = line_start;
+        while (j < text.len) : (j += 1) {
+            if (text[j] == '\n') {
+                line_end = j;
+                break;
+            }
+        }
+        // Whole line match: starts at line_start and ends at line_end
+        if (match_start == line_start and match_end == line_end) {
+            try filtered.append(allocator, match);
+        }
+    }
+
+    // Free original matches
+    result.allocator.free(result.matches);
+
+    return gpu.SearchResult{
+        .matches = try filtered.toOwnedSlice(allocator),
+        .total_matches = filtered.items.len,
+        .allocator = allocator,
+    };
+}
+
+/// Limit matches to first max_count unique matching lines (-m)
+fn limitMatchesToMaxCount(result: gpu.SearchResult, max_count: usize, allocator: std.mem.Allocator) !gpu.SearchResult {
+    if (result.matches.len == 0) return result;
+
+    var limited: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    var unique_lines: u64 = 0;
+    var last_line_start: u32 = std.math.maxInt(u32);
+
+    for (result.matches) |match| {
+        if (match.line_start != last_line_start) {
+            if (unique_lines >= max_count) break;
+            last_line_start = match.line_start;
+            unique_lines += 1;
+        }
+        try limited.append(allocator, match);
+    }
+
+    // Free original matches
+    result.allocator.free(result.matches);
+
+    return gpu.SearchResult{
+        .matches = try limited.toOwnedSlice(allocator),
+        .total_matches = limited.items.len,
+        .allocator = allocator,
+    };
+}
+
+/// Run a command and capture its stdout output
+fn runCommandAndCaptureOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    errdefer output.deinit(allocator);
+
+    var buf: [4096]u8 = undefined;
+    if (child.stdout) |stdout| {
+        while (true) {
+            const bytes_read = stdout.read(&buf) catch break;
+            if (bytes_read == 0) break;
+            try output.appendSlice(allocator, buf[0..bytes_read]);
+        }
+    }
+
+    _ = try child.wait();
+    return output.toOwnedSlice(allocator);
+}
+
 /// Choose appropriate search function based on options and backend
 fn doSearch(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator, backend_mode: BackendMode) !gpu.SearchResult {
     const use_gnu = backend_mode == .cpu_gnu;
 
-    if (options.fixed_string) {
-        return if (use_gnu)
-            cpu_gnu.search(text, pattern, options, allocator)
+    var result = if (options.fixed_string) blk: {
+        break :blk if (use_gnu)
+            try cpu_gnu.search(text, pattern, options, allocator)
         else
-            cpu.search(text, pattern, options, allocator);
-    } else if (options.perl) {
+            try cpu.search(text, pattern, options, allocator);
+    } else if (options.perl) blk: {
         // Use PCRE2 for Perl-compatible regex (-P flag)
-        return pcre.searchPcre(text, pattern, options, allocator);
-    } else {
-        return if (use_gnu)
-            cpu_gnu.searchRegex(text, pattern, options, allocator)
+        break :blk try pcre.searchPcre(text, pattern, options, allocator);
+    } else blk: {
+        break :blk if (use_gnu)
+            try cpu_gnu.searchRegex(text, pattern, options, allocator)
         else
-            cpu.searchRegex(text, pattern, options, allocator);
+            try cpu.searchRegex(text, pattern, options, allocator);
+    };
+
+    if (options.line_regexp) {
+        result = try filterLineRegexp(text, result, allocator);
     }
+    return result;
 }
 
 /// Search for multiple patterns in text, combining results (OR semantics)
@@ -691,7 +1044,10 @@ fn outputWithContext(
     for (ranges.items) |range| {
         // Print separator between groups
         if (!first_range) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "--\n") catch {};
+            if (output_opts.group_separator) |sep| {
+                _ = std.posix.write(std.posix.STDOUT_FILENO, sep) catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            }
         }
         first_range = false;
 
@@ -701,20 +1057,23 @@ fn outputWithContext(
             const line = lines[line_idx];
             const is_match = match_lines.contains(line_idx);
             const separator: []const u8 = if (is_match) ":" else "-";
+            const sep_with_tab = if (output_opts.initial_tab) "\t" else "";
 
             if (filename_prefix) |prefix| {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
                 _ = std.posix.write(std.posix.STDOUT_FILENO, separator) catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, sep_with_tab) catch {};
             }
             if (output_opts.line_numbers) {
                 var num_buf: [16]u8 = undefined;
-                const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{ line_idx + 1, separator }) catch continue;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}{s}", .{ line_idx + 1, separator, sep_with_tab }) catch continue;
                 _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
             }
             // Use color only for matching lines
             const use_color = output_opts.color_mode == .always and is_match;
             outputLineWithColor(text, line.start, line.end, matches, use_color);
             _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            if (output_opts.line_buffered) flushStdout();
         }
     }
 }
@@ -728,12 +1087,12 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
     while (true) {
         const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch |err| {
             if (err == error.WouldBlock) continue;
-            std.debug.print("grep: error reading stdin: {}\n", .{err});
+            if (!output_opts.suppress_messages) std.debug.print("grep: error reading stdin: {}\n", .{err});
             return .{ .found = false, .had_error = true };
         };
         if (bytes_read == 0) break;
         stdin_list.appendSlice(allocator, buf[0..bytes_read]) catch {
-            std.debug.print("grep: out of memory\n", .{});
+            if (!output_opts.suppress_messages) std.debug.print("grep: out of memory\n", .{});
             return .{ .found = false, .had_error = true };
         };
         if (stdin_list.items.len > gpu.MAX_GPU_BUFFER_SIZE) break;
@@ -851,6 +1210,11 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
     };
     defer result.deinit();
 
+    // Apply max_count: limit to first max_count unique matching lines
+    if (output_opts.max_count) |max| {
+        result = limitMatchesToMaxCount(result, max, allocator) catch result;
+    }
+
     const found = result.matches.len > 0;
 
     // For quiet mode, don't output anything
@@ -894,43 +1258,9 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         const count_str = std.fmt.bufPrint(&count_buf, "{d}\n", .{line_count}) catch return .{ .found = found, .had_error = false };
         if (filename_prefix) |prefix| {
             _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+            writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
-    } else if (output_opts.only_matching) {
-        // Output only the matching text, not the whole line
-        for (result.matches) |match| {
-            if (filename_prefix) |prefix| {
-                _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
-            }
-            if (output_opts.line_numbers) {
-                // Use GPU-computed line number if available, otherwise compute on CPU
-                const line_num = if (match.line_num > 0) match.line_num else blk: {
-                    var ln: u32 = 1;
-                    var pos: usize = 0;
-                    while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') ln += 1;
-                    }
-                    break :blk ln;
-                };
-                var num_buf: [16]u8 = undefined;
-                const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
-                _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
-            }
-            // Output the matched text (with color if enabled)
-            const match_end = match.position + match.match_len;
-            if (match_end <= text.len) {
-                if (output_opts.color_mode == .always) {
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_MATCH_START) catch {};
-                }
-                _ = std.posix.write(std.posix.STDOUT_FILENO, text[match.position..match_end]) catch {};
-                if (output_opts.color_mode == .always) {
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_RESET) catch {};
-                }
-            }
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
-        }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
         outputWithContext(text, result.matches, output_opts, filename_prefix, allocator);
@@ -949,7 +1279,12 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
 
                 if (filename_prefix) |prefix| {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                    writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
+                }
+                if (output_opts.byte_offset) {
+                    var off_buf: [32]u8 = undefined;
+                    const off_str = std.fmt.bufPrint(&off_buf, "{d}:", .{match.line_start}) catch continue;
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, off_str) catch {};
                 }
                 if (output_opts.line_numbers) {
                     // Use GPU-computed line number if available, otherwise fall back to CPU computation
@@ -963,7 +1298,8 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                         break :blk current_line_num;
                     };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
+                    const sep_with_tab = if (output_opts.initial_tab) ":\t" else ":";
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{line_num, sep_with_tab}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
@@ -1128,10 +1464,109 @@ fn isLikelyRarePattern(pattern: []const u8) bool {
     return false;
 }
 
+/// Simple glob matching (supports * and ?)
+fn matchGlob(text: []const u8, pattern: []const u8) bool {
+    var ti: usize = 0;
+    var pi: usize = 0;
+    var star_pi: ?usize = null;
+    var star_ti: usize = 0;
+
+    while (ti < text.len or pi < pattern.len) {
+        if (pi < pattern.len) {
+            switch (pattern[pi]) {
+                '?' => {
+                    if (ti >= text.len) return false;
+                    ti += 1;
+                    pi += 1;
+                },
+                '*' => {
+                    star_pi = pi;
+                    star_ti = ti;
+                    pi += 1;
+                },
+                '[' => {
+                    if (ti >= text.len) return false;
+                    const c = text[ti];
+                    pi += 1; // skip '['
+                    var negated = false;
+                    if (pi < pattern.len and pattern[pi] == '!') {
+                        negated = true;
+                        pi += 1;
+                    }
+                    var matched = false;
+                    while (pi < pattern.len and pattern[pi] != ']') {
+                        if (pi + 2 < pattern.len and pattern[pi + 1] == '-') {
+                            const start_char = pattern[pi];
+                            const end_char = pattern[pi + 2];
+                            if (c >= start_char and c <= end_char) {
+                                matched = true;
+                            }
+                            pi += 3;
+                        } else {
+                            if (c == pattern[pi]) {
+                                matched = true;
+                            }
+                            pi += 1;
+                        }
+                    }
+                    if (pi >= pattern.len) return false; // unterminated [
+                    pi += 1; // skip ']'
+                    if (negated) matched = !matched;
+                    if (!matched) {
+                        if (star_pi) |sp| {
+                            if (star_ti >= text.len) return false;
+                            pi = sp + 1;
+                            star_ti += 1;
+                            ti = star_ti;
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        ti += 1;
+                    }
+                },
+                else => {
+                    if (ti < text.len and text[ti] == pattern[pi]) {
+                        ti += 1;
+                        pi += 1;
+                    } else if (star_pi) |sp| {
+                        if (star_ti >= text.len) {
+                            return false;
+                        }
+                        pi = sp + 1;
+                        star_ti += 1;
+                        ti = star_ti;
+                    } else {
+                        return false;
+                    }
+                },
+            }
+        } else if (star_pi) |sp| {
+            if (star_ti >= text.len) {
+                return true;
+            }
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Check if a filename matches any pattern in the list
+fn matchesAnyPattern(name: []const u8, patterns: []const []const u8) bool {
+    for (patterns) |pat| {
+        if (matchGlob(name, pat)) return true;
+    }
+    return false;
+}
+
 /// Process a directory recursively
-fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool) void {
+fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool, include_patterns: []const []const u8, exclude_patterns: []const []const u8, exclude_dir_patterns: []const []const u8, follow_symlinks: bool) void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        std.debug.print("grep: {s}: {}\n", .{ path, err });
+        if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ path, err });
         had_error.* = true;
         return;
     };
@@ -1139,7 +1574,7 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
 
     var iter = dir.iterate();
     while (iter.next() catch |err| {
-        std.debug.print("grep: {s}: {}\n", .{ path, err });
+        if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ path, err });
         had_error.* = true;
         return;
     }) |entry| {
@@ -1153,15 +1588,43 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
         if (entry.kind == .directory) {
             // Skip hidden directories (starting with .)
             if (entry.name.len > 0 and entry.name[0] == '.') continue;
+            // Check exclude-dir patterns
+            if (exclude_dir_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_dir_patterns)) continue;
             // Recurse into subdirectory
-            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode);
+            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns, follow_symlinks);
         } else if (entry.kind == .file) {
+            // Check include/exclude patterns
+            if (include_patterns.len > 0 and !matchesAnyPattern(entry.name, include_patterns)) continue;
+            if (exclude_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_patterns)) continue;
             // Process file
             const result = processFile(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts);
             if (result.found) found_match.* = true;
             if (result.had_error) had_error.* = true;
+        } else if (entry.kind == .sym_link and follow_symlinks) {
+            // Follow symlink: check what it points to
+            const target_stat = std.fs.cwd().statFile(full_path) catch {
+                // Broken symlink or can't access - skip
+                continue;
+            };
+            if (target_stat.kind == .directory) {
+                if (entry.name.len > 0 and entry.name[0] == '.') continue;
+                if (exclude_dir_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_dir_patterns)) continue;
+                processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns, follow_symlinks);
+            } else {
+                if (include_patterns.len > 0 and !matchesAnyPattern(entry.name, include_patterns)) continue;
+                if (exclude_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_patterns)) continue;
+                const result = processFile(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts);
+                if (result.found) found_match.* = true;
+                if (result.had_error) had_error.* = true;
+            }
         }
-        // Skip symlinks and other special files
+        // Skip special files if --devices=skip
+        if (output_opts.device_action == .skip) {
+            switch (entry.kind) {
+                .block_device, .character_device, .named_pipe, .unix_domain_socket => continue,
+                else => {},
+            }
+        }
 
         // For quiet mode, exit early on first match
         if (quiet_mode and found_match.*) return;
@@ -1170,15 +1633,24 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
 
 fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions) ProcessResult {
     const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
-        std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+        if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
         return .{ .found = false, .had_error = true };
     };
     defer file.close();
 
     const stat = file.stat() catch |err| {
-        std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+        if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
         return .{ .found = false, .had_error = true };
     };
+    // Skip special files if --devices=skip
+    if (output_opts.device_action == .skip) {
+        switch (stat.kind) {
+            .block_device, .character_device, .named_pipe, .unix_domain_socket => {
+                return .{ .found = false, .had_error = false };
+            },
+            else => {},
+        }
+    }
     const file_size = stat.size;
 
     // For auto mode, detect hardware capabilities to adjust thresholds
@@ -1220,7 +1692,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     const first_pattern = if (all_patterns.len > 0) all_patterns[0] else "";
 
     // Select backend using hardware-adjusted config
-    const backend: gpu.Backend = switch (backend_mode) {
+    var backend: gpu.Backend = switch (backend_mode) {
         .auto => selectOptimalBackend(first_pattern, options, file_size, adjusted_config),
         .gpu => if (build_options.is_macos) .metal else .vulkan,
         .cpu, .cpu_gnu => .cpu, // Both CPU backends use .cpu for dispatch
@@ -1239,11 +1711,64 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         }
     }
 
-    const text = file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE) catch |err| {
-        std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+    var text = file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE) catch |err| {
+        if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
         return .{ .found = false, .had_error = true };
     };
     defer allocator.free(text);
+
+    // Check for compressed files by extension and decompress
+    if (std.mem.endsWith(u8, filepath, ".gz")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"gunzip", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    } else if (std.mem.endsWith(u8, filepath, ".bz2")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"bunzip2", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    } else if (std.mem.endsWith(u8, filepath, ".xz")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"unxz", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    }
+
+    // Check for binary files (unless -a/--text forces text mode, or -z where nulls are expected)
+    const is_binary = if (output_opts.binary_files != .text and !options.null_data) blk: {
+        // Check first 8KB for null bytes
+        const check_len = @min(text.len, 8192);
+        var has_null = false;
+        for (text[0..check_len]) |c| {
+            if (c == 0) {
+                has_null = true;
+                break;
+            }
+        }
+        break :blk has_null;
+    } else false;
+
+    if (is_binary) {
+        switch (output_opts.binary_files) {
+            .without_match => return .{ .found = false, .had_error = false },
+            .binary => {
+                if (!output_opts.suppress_messages) {
+                    std.debug.print("Binary file {s} matches\n", .{filepath});
+                }
+                return .{ .found = true, .had_error = false };
+            },
+            .text => {}, // proceed normally
+        }
+    }
+
+    // For -z (null-data), force CPU backend since GPU shaders don't support \0 delimiter
+    if (options.null_data) {
+        backend = .cpu;
+        if (verbose) {
+            std.debug.print("-z mode: forcing CPU backend\n", .{});
+        }
+    }
 
     // For multiple patterns, always use CPU multi-pattern search
     var result = if (all_patterns.len > 1)
@@ -1323,6 +1848,11 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     };
     defer result.deinit();
 
+    // Apply max_count: limit to first max_count unique matching lines
+    if (output_opts.max_count) |max| {
+        result = limitMatchesToMaxCount(result, max, allocator) catch result;
+    }
+
     const found = result.matches.len > 0;
 
     // For quiet mode, don't output anything
@@ -1333,8 +1863,10 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     // For files-without-match mode, only output filename if no matches
     if (output_opts.files_without_match) {
         if (!found) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            if (output_opts.show_filename) {
+                _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
+                writeFilenameTerminator(output_opts.null_terminated);
+            }
         }
         return .{ .found = found, .had_error = false };
     }
@@ -1342,8 +1874,10 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     // For files-with-matches mode, only output filename if matches found
     if (output_opts.files_with_matches) {
         if (found) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            if (output_opts.show_filename) {
+                _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
+                writeFilenameTerminator(output_opts.null_terminated);
+            }
         }
         return .{ .found = found, .had_error = false };
     }
@@ -1359,10 +1893,11 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
             }
         }
         var count_buf: [32]u8 = undefined;
-        const count_str = std.fmt.bufPrint(&count_buf, "{d}\n", .{line_count}) catch return .{ .found = found, .had_error = false };
+        const term = getLineTerminator(output_opts.null_data);
+        const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ line_count, term }) catch return .{ .found = found, .had_error = false };
         if (output_opts.show_filename) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+            writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
     } else if (output_opts.only_matching) {
@@ -1370,15 +1905,21 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         for (result.matches) |match| {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
+            }
+            if (output_opts.byte_offset) {
+                var off_buf: [32]u8 = undefined;
+                const off_str = std.fmt.bufPrint(&off_buf, "{d}:", .{match.position}) catch continue;
+                _ = std.posix.write(std.posix.STDOUT_FILENO, off_str) catch {};
             }
             if (output_opts.line_numbers) {
                 // Use GPU-computed line number if available, otherwise compute on CPU
                 const line_num = if (match.line_num > 0) match.line_num else blk: {
                     var ln: u32 = 1;
                     var pos: usize = 0;
+                    const delim = getLineTerminator(output_opts.null_data)[0];
                     while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') ln += 1;
+                        if (text[pos] == delim) ln += 1;
                     }
                     break :blk ln;
                 };
@@ -1397,7 +1938,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                     _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_RESET) catch {};
                 }
             }
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            writeLineTerminator(output_opts.null_data);
+            if (output_opts.line_buffered) flushStdout();
         }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
@@ -1408,37 +1950,52 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         var last_line_start: u32 = std.math.maxInt(u32);
         var current_line_num: u32 = 1;
         var last_line_counted: u32 = 0;
+        const delim = getLineTerminator(output_opts.null_data)[0];
 
         for (result.matches) |match| {
-            if (match.line_start != last_line_start) {
-                last_line_start = match.line_start;
+            // Compute actual line start: for -z, find previous \0; otherwise use match.line_start
+            const actual_line_start = if (output_opts.null_data) blk: {
+                var start = match.position;
+                while (start > 0 and text[start - 1] != 0) start -= 1;
+                break :blk @as(u32, @intCast(start));
+            } else match.line_start;
+
+            if (actual_line_start != last_line_start) {
+                last_line_start = actual_line_start;
 
                 // Find line end
-                var line_end = match.line_start;
-                while (line_end < text.len and text[line_end] != '\n') line_end += 1;
+                var line_end = actual_line_start;
+                while (line_end < text.len and text[line_end] != delim) line_end += 1;
 
                 if (output_opts.show_filename) {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                    writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
+                }
+                if (output_opts.byte_offset) {
+                    var off_buf: [32]u8 = undefined;
+                    const off_str = std.fmt.bufPrint(&off_buf, "{d}:", .{match.line_start}) catch continue;
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, off_str) catch {};
                 }
                 if (output_opts.line_numbers) {
                     // Use GPU-computed line number if available, otherwise fall back to CPU computation
-                    const line_num = if (match.line_num > 0) match.line_num else blk: {
-                        // Fall back to counting newlines on CPU
+                    const line_num = if (match.line_num > 0 and !output_opts.null_data) match.line_num else blk: {
+                        // Fall back to counting delimiters on CPU
                         var pos: usize = last_line_counted;
-                        while (pos < match.line_start) : (pos += 1) {
-                            if (text[pos] == '\n') current_line_num += 1;
+                        while (pos < actual_line_start) : (pos += 1) {
+                            if (text[pos] == delim) current_line_num += 1;
                         }
-                        last_line_counted = match.line_start;
+                        last_line_counted = actual_line_start;
                         break :blk current_line_num;
                     };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
+                    const sep_with_tab = if (output_opts.initial_tab) ":\t" else ":";
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{line_num, sep_with_tab}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
-                outputLineWithColor(text, match.line_start, line_end, result.matches, output_opts.color_mode == .always);
-                _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+                outputLineWithColor(text, actual_line_start, line_end, result.matches, output_opts.color_mode == .always);
+                writeLineTerminator(output_opts.null_data);
+                if (output_opts.line_buffered) flushStdout();
             }
         }
     }
@@ -1448,6 +2005,25 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
     }
 
     return .{ .found = found, .had_error = false };
+}
+
+fn readPatternsFromFile(allocator: std.mem.Allocator, filepath: []const u8, patterns: *std.ArrayListUnmanaged([]const u8), suppress_messages: bool) !void {
+    const file = std.fs.cwd().openFile(filepath, .{}) catch |err| {
+        if (!suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+        return error.FileOpenFailed;
+    };
+    defer file.close();
+    const content = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
+        if (!suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
+        return error.FileReadFailed;
+    };
+    defer allocator.free(content);
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len > 0) {
+            try patterns.append(allocator, try allocator.dupe(u8, line));
+        }
+    }
 }
 
 fn printUsage() void {
@@ -1480,6 +2056,8 @@ fn printUsage() void {
         \\  -o, --only-matching       print only matched parts              [GPU+SIMD]
         \\  -q, --quiet, --silent     suppress output (exit status only)    [GPU+SIMD]
         \\  -r, -R, --recursive       search directories recursively        [GPU+SIMD]
+        \\  -d ACTION, --directories=ACTION  how to handle directories:
+        \\                              read=as files, skip=silently, recurse=into
         \\  -V, --verbose             print backend and timing info
         \\
         \\Backend selection:

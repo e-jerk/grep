@@ -63,6 +63,8 @@ pub const SearchOptions = struct {
     fixed_string: bool = true,
     extended: bool = false, // ERE mode (-E), when false uses BRE (-G)
     perl: bool = false, // PCRE mode (-P) for Perl-compatible regex
+    line_regexp: bool = false, // -x: match whole lines only
+    null_data: bool = false, // -z: use NUL as line delimiter
 
     pub fn toFlags(self: SearchOptions) u32 {
         var flags: u32 = 0;
