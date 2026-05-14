@@ -228,7 +228,7 @@ else
 fi
 
 # Test 17: Line count (-c) if supported
-if $GREP --help 2>&1 | /usr/bin/grep -q '\-c'; then
+if $GREP --help 2>&1 | command -p grep -q '\-c'; then
     result=$($GREP -c "pattern" "$TMPDIR/test3.txt" 2>/dev/null)
     if [ "$result" -eq 2 ]; then
         pass "Count mode (-c)"
@@ -281,8 +281,8 @@ third line
 fourth with pattern
 EOF
 result=$($GREP -n "pattern" "$TMPDIR/test21.txt" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q "^2:"; then
-    if echo "$result" | /usr/bin/grep -q "^4:"; then
+if echo "$result" | command -p grep -q "^2:"; then
+    if echo "$result" | command -p grep -q "^4:"; then
         pass "Line numbers (-n)"
     else
         fail "Line numbers (-n)" "2: and 4:" "$result"
@@ -336,8 +336,8 @@ fi
 
 # Test 27: Line numbers with only matching (-n -o)
 result=$(echo -e "hello world\ntest\nhello again" | $GREP -n -o "hello" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q "^1:hello"; then
-    if echo "$result" | /usr/bin/grep -q "^3:hello"; then
+if echo "$result" | command -p grep -q "^1:hello"; then
+    if echo "$result" | command -p grep -q "^3:hello"; then
         pass "Line numbers with only matching (-n -o)"
     else
         fail "Line numbers with only matching (-n -o)"
@@ -382,9 +382,9 @@ fi
 
 # Test 31: Context with line numbers
 result=$($GREP -n -B1 -A1 "MATCH" "$TMPDIR/context.txt" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q "^2-line 2"; then
-    if echo "$result" | /usr/bin/grep -q "^3:MATCH"; then
-        if echo "$result" | /usr/bin/grep -q "^4-line 4"; then
+if echo "$result" | command -p grep -q "^2-line 2"; then
+    if echo "$result" | command -p grep -q "^3:MATCH"; then
+        if echo "$result" | command -p grep -q "^4-line 4"; then
             pass "Context with line numbers (-n -B1 -A1)"
         else
             fail "Context with line numbers" "4-line 4" "$result"
@@ -407,7 +407,7 @@ MATCH2
 line 7
 EOF
 result=$($GREP -C1 "MATCH" "$TMPDIR/multi_context.txt" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q "^--$"; then
+if echo "$result" | command -p grep -q "^--$"; then
     pass "Context separator between groups (--)"
 else
     fail "Context separator between groups" "-- separator" "$result"
@@ -424,7 +424,7 @@ EOF
 result=$($GREP -C1 "MATCH" "$TMPDIR/merged.txt" 2>/dev/null)
 # When context overlaps, groups should merge (no separator)
 lines=$(echo "$result" | wc -l | tr -d ' ')
-separators=$(echo "$result" | /usr/bin/grep -c "^--$" 2>/dev/null || true)
+separators=$(echo "$result" | command -p grep -c "^--$" 2>/dev/null || true)
 separators=${separators:-0}
 if [ "$lines" -eq 5 ] && [ "$separators" -eq 0 ]; then
     pass "Merged context groups (overlapping)"
@@ -450,7 +450,7 @@ else
 fi
 
 # Test 35: Recursive with line numbers (-rn)
-result=$($GREP -rn "pattern" "$TMPDIR/recursive" 2>/dev/null | /usr/bin/grep -c ":1:" || true)
+result=$($GREP -rn "pattern" "$TMPDIR/recursive" 2>/dev/null | command -p grep -c ":1:" || true)
 result=${result:-0}
 if [ "$result" -eq 4 ]; then
     pass "Recursive with line numbers (-rn)"
@@ -468,7 +468,7 @@ else
 fi
 
 # Test 37: Recursive count (-rc)
-result=$($GREP -rc "pattern" "$TMPDIR/recursive" 2>/dev/null | /usr/bin/grep -c ":1$" || true)
+result=$($GREP -rc "pattern" "$TMPDIR/recursive" 2>/dev/null | command -p grep -c ":1$" || true)
 result=${result:-0}
 if [ "$result" -ge 4 ]; then
     pass "Recursive count (-rc)"
@@ -490,7 +490,7 @@ echo "--- Color Output Tests ---"
 # Test 39: Color output (--color=always)
 result=$(echo "hello world hello" | $GREP --color=always "hello" 2>/dev/null)
 # Check for ANSI escape codes (ESC[01;31m)
-if echo "$result" | /usr/bin/grep -q $'\x1b\[01;31m'; then
+if echo "$result" | command -p grep -q $'\x1b\[01;31m'; then
     pass "Color output (--color=always)"
 else
     fail "Color output (--color=always)" "ANSI escape codes" "$result"
@@ -499,7 +499,7 @@ fi
 # Test 40: Color output with multiple matches on same line
 result=$(echo "test pattern test pattern end" | $GREP --color=always "pattern" 2>/dev/null)
 # Should have two colored "pattern" occurrences
-count=$(echo "$result" | /usr/bin/grep -o $'\x1b\[01;31m' | wc -l | tr -d ' ')
+count=$(echo "$result" | command -p grep -o $'\x1b\[01;31m' | wc -l | tr -d ' ')
 if [ "$count" -eq 2 ]; then
     pass "Color output multiple matches"
 else
@@ -508,7 +508,7 @@ fi
 
 # Test 41: Color with -o (only-matching)
 result=$(echo "hello world" | $GREP --color=always -o "hello" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q $'\x1b\[01;31mhello\x1b\[m'; then
+if echo "$result" | command -p grep -q $'\x1b\[01;31mhello\x1b\[m'; then
     pass "Color with only-matching (-o)"
 else
     fail "Color with only-matching (-o)"
@@ -516,7 +516,7 @@ fi
 
 # Test 42: No color output (--color=never)
 result=$(echo "hello world" | $GREP --color=never "hello" 2>/dev/null)
-if echo "$result" | /usr/bin/grep -q $'\x1b'; then
+if echo "$result" | command -p grep -q $'\x1b'; then
     fail "No color output (--color=never)" "no escape codes" "$result"
 else
     pass "No color output (--color=never)"
