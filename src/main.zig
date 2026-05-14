@@ -81,6 +81,7 @@ pub fn main() !u8 {
     var byte_offset = false;
     var binary_files: BinaryFilesMode = .binary;
     var directory_action: DirectoryAction = .read;
+    var device_action: DeviceAction = .read;
     var null_terminated = false;
     var line_buffered = false;
     var label: ?[]const u8 = null;
@@ -233,6 +234,26 @@ pub fn main() !u8 {
                 directory_action = .recurse;
             } else {
                 std.debug.print("Invalid --directories value: {s}\n", .{val});
+                return 2;
+            }
+        } else if (std.mem.eql(u8, arg, "--devices") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "read")) {
+                device_action = .read;
+            } else if (std.mem.eql(u8, args[i], "skip")) {
+                device_action = .skip;
+            } else {
+                std.debug.print("Invalid --devices value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--devices=")) {
+            const val = arg["--devices=".len..];
+            if (std.mem.eql(u8, val, "read")) {
+                device_action = .read;
+            } else if (std.mem.eql(u8, val, "skip")) {
+                device_action = .skip;
+            } else {
+                std.debug.print("Invalid --devices value: {s}\n", .{val});
                 return 2;
             }
         } else if (std.mem.eql(u8, arg, "--include") and i + 1 < args.len) {
@@ -541,6 +562,7 @@ pub fn main() !u8 {
         .null_data = options.null_data,
         .binary_files = binary_files,
         .directory_action = directory_action,
+        .device_action = device_action,
         .null_terminated = null_terminated,
         .line_buffered = line_buffered,
         .label = label,
@@ -626,6 +648,11 @@ const DirectoryAction = enum {
     recurse, // -d recurse or -r: recurse into directories
 };
 
+const DeviceAction = enum {
+    read, // --devices read: read devices as if they were ordinary files (default)
+    skip, // --devices skip: silently skip devices, FIFOs and sockets
+};
+
 const OutputOptions = struct {
     count_only: bool = false,
     line_numbers: bool = false,
@@ -644,6 +671,7 @@ const OutputOptions = struct {
     null_data: bool = false, // -z: use NUL as line delimiter
     binary_files: BinaryFilesMode = .binary,
     directory_action: DirectoryAction = .read, // -d ACTION
+    device_action: DeviceAction = .read, // --devices=ACTION
     null_terminated: bool = false, // -Z: use NUL after filenames
     line_buffered: bool = false, // --line-buffered: flush after each line
     label: ?[]const u8 = null, // --label: label for stdin in multi-file context
@@ -746,6 +774,29 @@ fn limitMatchesToMaxCount(result: gpu.SearchResult, max_count: usize, allocator:
         .total_matches = limited.items.len,
         .allocator = allocator,
     };
+}
+
+/// Run a command and capture its stdout output
+fn runCommandAndCaptureOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    errdefer output.deinit(allocator);
+
+    var buf: [4096]u8 = undefined;
+    if (child.stdout) |stdout| {
+        while (true) {
+            const bytes_read = stdout.read(&buf) catch break;
+            if (bytes_read == 0) break;
+            try output.appendSlice(allocator, buf[0..bytes_read]);
+        }
+    }
+
+    _ = try child.wait();
+    return output.toOwnedSlice(allocator);
 }
 
 /// Choose appropriate search function based on options and backend
@@ -1433,6 +1484,47 @@ fn matchGlob(text: []const u8, pattern: []const u8) bool {
                     star_ti = ti;
                     pi += 1;
                 },
+                '[' => {
+                    if (ti >= text.len) return false;
+                    const c = text[ti];
+                    pi += 1; // skip '['
+                    var negated = false;
+                    if (pi < pattern.len and pattern[pi] == '!') {
+                        negated = true;
+                        pi += 1;
+                    }
+                    var matched = false;
+                    while (pi < pattern.len and pattern[pi] != ']') {
+                        if (pi + 2 < pattern.len and pattern[pi + 1] == '-') {
+                            const start_char = pattern[pi];
+                            const end_char = pattern[pi + 2];
+                            if (c >= start_char and c <= end_char) {
+                                matched = true;
+                            }
+                            pi += 3;
+                        } else {
+                            if (c == pattern[pi]) {
+                                matched = true;
+                            }
+                            pi += 1;
+                        }
+                    }
+                    if (pi >= pattern.len) return false; // unterminated [
+                    pi += 1; // skip ']'
+                    if (negated) matched = !matched;
+                    if (!matched) {
+                        if (star_pi) |sp| {
+                            if (star_ti >= text.len) return false;
+                            pi = sp + 1;
+                            star_ti += 1;
+                            ti = star_ti;
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        ti += 1;
+                    }
+                },
                 else => {
                     if (ti < text.len and text[ti] == pattern[pi]) {
                         ti += 1;
@@ -1526,7 +1618,13 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
                 if (result.had_error) had_error.* = true;
             }
         }
-        // Skip other special files (block devices, etc.)
+        // Skip special files if --devices=skip
+        if (output_opts.device_action == .skip) {
+            switch (entry.kind) {
+                .block_device, .character_device, .named_pipe, .unix_domain_socket => continue,
+                else => {},
+            }
+        }
 
         // For quiet mode, exit early on first match
         if (quiet_mode and found_match.*) return;
@@ -1544,6 +1642,15 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
         return .{ .found = false, .had_error = true };
     };
+    // Skip special files if --devices=skip
+    if (output_opts.device_action == .skip) {
+        switch (stat.kind) {
+            .block_device, .character_device, .named_pipe, .unix_domain_socket => {
+                return .{ .found = false, .had_error = false };
+            },
+            else => {},
+        }
+    }
     const file_size = stat.size;
 
     // For auto mode, detect hardware capabilities to adjust thresholds
@@ -1604,11 +1711,29 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         }
     }
 
-    const text = file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE) catch |err| {
+    var text = file.readToEndAlloc(allocator, gpu.MAX_GPU_BUFFER_SIZE) catch |err| {
         if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
         return .{ .found = false, .had_error = true };
     };
     defer allocator.free(text);
+
+    // Check for compressed files by extension and decompress
+    if (std.mem.endsWith(u8, filepath, ".gz")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"gunzip", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    } else if (std.mem.endsWith(u8, filepath, ".bz2")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"bunzip2", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    } else if (std.mem.endsWith(u8, filepath, ".xz")) {
+        if (runCommandAndCaptureOutput(allocator, &[_][]const u8{"unxz", "-c", filepath})) |dt| {
+            allocator.free(text);
+            text = dt;
+        } else |_| {}
+    }
 
     // Check for binary files (unless -a/--text forces text mode, or -z where nulls are expected)
     const is_binary = if (output_opts.binary_files != .text and !options.null_data) blk: {
