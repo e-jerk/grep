@@ -1261,6 +1261,44 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
             writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
+    } else if (output_opts.only_matching) {
+        // Output only the matching text, not the whole line
+        for (result.matches) |match| {
+            if (filename_prefix) |prefix| {
+                _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
+                writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
+            }
+            if (output_opts.byte_offset) {
+                var off_buf: [32]u8 = undefined;
+                const off_str = std.fmt.bufPrint(&off_buf, "{d}:", .{match.position}) catch continue;
+                _ = std.posix.write(std.posix.STDOUT_FILENO, off_str) catch {};
+            }
+            if (output_opts.line_numbers) {
+                const line_num = if (match.line_num > 0) match.line_num else blk: {
+                    var ln: u32 = 1;
+                    var pos: usize = 0;
+                    while (pos < match.line_start) : (pos += 1) {
+                        if (text[pos] == '\n') ln += 1;
+                    }
+                    break :blk ln;
+                };
+                var num_buf: [16]u8 = undefined;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
+                _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
+            }
+            const match_end = match.position + match.match_len;
+            if (match_end <= text.len) {
+                if (output_opts.color_mode == .always) {
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_MATCH_START) catch {};
+                }
+                _ = std.posix.write(std.posix.STDOUT_FILENO, text[match.position..match_end]) catch {};
+                if (output_opts.color_mode == .always) {
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_RESET) catch {};
+                }
+            }
+            writeLineTerminator(output_opts.null_data);
+            if (output_opts.line_buffered) flushStdout();
+        }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
         outputWithContext(text, result.matches, output_opts, filename_prefix, allocator);
