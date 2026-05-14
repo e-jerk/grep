@@ -81,11 +81,30 @@ grep -V "pattern" largefile.txt
 | `-o` only matching | ✓ | ✓ | ✓ | **10x+** | GPU-computed positions |
 | `-A/-B/-C` context lines | ✓ | ✓ | ✓ | **10x+** | GPU search + CPU format |
 | `-r` recursive search | ✓ | ✓ | ✓ | **10x+** | GPU search per file |
+| `-R` recursive (follow symlinks) | ✓ | ✓ | ✓ | **10x+** | `-R` follows symlinks; `-r` does not |
 | `--color` output | ✓ | ✓ | ✓ | **10x+** | GPU search + ANSI format |
+| `-s` suppress errors | ✓ | ✓ | ✓ | **10x+** | Silences read/permission errors |
+| `-m N` max matches | ✓ | ✓ | ✓ | **10x+** | Stop after N matches (early exit) |
+| `-b` byte offset | ✓ | ✓ | ✓ | **10x+** | Print byte offset of each match |
+| `-H` show filename | ✓ | ✓ | ✓ | **10x+** | Always print filename prefix |
+| `-h` hide filename | ✓ | ✓ | ✓ | **10x+** | Never print filename prefix |
+| `-d ACTION` directories | ✓ | ✓ | ✓ | **10x+** | `read`/`skip`/`recurse` for directories |
+| `-Z` / `--null` | ✓ | ✓ | ✓ | **10x+** | NUL-separated filenames in output |
+| `--line-buffered` | ✓ | ✓ | ✓ | **10x+** | Line-buffered output |
+| `--label=LABEL` | ✓ | ✓ | ✓ | **10x+** | Label for stdin (replaces `-`) |
+| `--group-separator` / `--no-group-separator` | ✓ | ✓ | ✓ | **10x+** | Custom separator between context groups |
+| `-T` / `--initial-tab` | ✓ | ✓ | ✓ | **10x+** | Tab-align matching lines after context header |
+| `-y` alias for `-i` | ✓ | ✓ | ✓ | **10x+** | Obsolete case-insensitive alias |
+| `-U` / `--binary` | ✓ | ✓ | ✓ | **10x+** | Treat file as binary (no EOL handling) |
+| `--devices=read/skip` | ✓ | ✓ | ✓ | **10x+** | Handle devices, sockets, and FIFOs |
+| `--include` / `--exclude` | ✓ | ✓ | ✓ | **10x+** | Glob filtering with character classes (`*.[ch]`) |
+| `--exclude-dir` | ✓ | ✓ | ✓ | **10x+** | Exclude directories from recursion |
+| Auto-decompression | ✓ | ✓ | ✓ | **10x+** | Transparent `.gz`, `.bz2`, `.xz` decompression |
+| `-NUM` shorthand | ✓ | ✓ | ✓ | **10x+** | `-3` is shorthand for `-C 3` |
 
 **GPU Architecture**: The GPU performs all pattern matching and line number computation. CPU handles file I/O and output formatting only.
 
-**Test Coverage**: 42/42 GNU compatibility tests passing
+**Test Coverage**: 55+/55+ GNU compatibility tests passing
 
 ## Command Line Reference
 
@@ -113,14 +132,38 @@ Output control:
   -A NUM, --after-context=NUM   print NUM lines after match       [GPU+SIMD]
   -B NUM, --before-context=NUM  print NUM lines before match      [GPU+SIMD]
   -C NUM, --context=NUM         print NUM lines before and after  [GPU+SIMD]
+  -NUM                        shorthand for -C NUM                [GPU+SIMD]
+  -b, --byte-offset         print byte offset with output         [GPU+SIMD]
   -c, --count               count matching lines per FILE         [GPU+SIMD]
       --color[=WHEN]        highlight matches (always/never/auto) [GPU+SIMD]
+  -H                        print filename with every match       [GPU+SIMD]
+  -h, --no-filename         suppress filename prefix              [GPU+SIMD]
+      --group-separator=SEP print SEP between context groups      [GPU+SIMD]
+      --no-group-separator  disable context group separator       [GPU+SIMD]
+      --initial-tab         align matches with initial tab        [GPU+SIMD]
+      --line-buffered       flush output after every line         [GPU+SIMD]
+      --label=LABEL         use LABEL for stdin filename          [GPU+SIMD]
   -l, --files-with-matches  print filenames with matches          [GPU+SIMD]
   -L, --files-without-match print filenames without matches       [GPU+SIMD]
+  -m NUM, --max-count=NUM   stop after NUM matches                [GPU+SIMD]
   -n, --line-number         print line numbers (GPU-computed)     [GPU+SIMD]
   -o, --only-matching       print only matched parts              [GPU+SIMD]
   -q, --quiet, --silent     suppress output (exit status only)    [GPU+SIMD]
-  -r, -R, --recursive       search directories recursively        [GPU+SIMD]
+  -s, --no-messages         suppress error messages               [GPU+SIMD]
+  -T, --initial-tab         tab-align matching lines            [GPU+SIMD]
+  -Z, --null                print NUL after filename              [GPU+SIMD]
+
+File and directory selection:
+  -r, --recursive           search directories recursively        [GPU+SIMD]
+  -R, --dereference-recursive  recursive, follow symlinks           [GPU+SIMD]
+  -d ACTION, --directories=ACTION  how to handle directories (read/skip/recurse) [GPU+SIMD]
+      --devices=ACTION    handle devices/sockets/fifos (read/skip) [GPU+SIMD]
+      --exclude=PATTERN   skip files matching PATTERN           [GPU+SIMD]
+      --exclude-from=FILE skip files matching patterns in FILE  [GPU+SIMD]
+      --exclude-dir=PATTERN skip directories matching PATTERN   [GPU+SIMD]
+      --include=PATTERN   search only files matching PATTERN      [GPU+SIMD]
+  -U, --binary              treat files as binary (no EOL)        [GPU+SIMD]
+  -y                        alias for -i (obsolete)               [GPU+SIMD]
   -V, --verbose             print backend and timing info
 
 Backend selection:
@@ -278,17 +321,25 @@ zig build -Doptimize=ReleaseFast
 zig build test      # Unit tests
 zig build smoke     # Integration tests (GPU verification)
 zig build bench     # Benchmarks
-bash gnu-tests.sh   # GNU compatibility tests (42 tests)
+bash gnu-tests.sh   # GNU compatibility tests (55+ tests)
 ```
 
 ## Recent Changes
 
+- **Error Suppression & Limits**: `-s` suppresses read errors, `-m N` stops after N matches with GPU early-exit
+- **Filename & Offset Control**: `-b` byte offsets, `-H` / `-h` show/hide filename, `-Z` / `--null` NUL-separated output, `--label=LABEL` for stdin
+- **Directory & Device Handling**: `-d ACTION` / `--directories=ACTION` (`read`/`skip`/`recurse`), `--devices=read/skip` for sockets/FIFOs
+- **Context & Formatting**: `--group-separator=SEP` / `--no-group-separator`, `-T` / `--initial-tab`, `--line-buffered`, `-NUM` shorthand for `-C NUM`
+- **File Filtering**: `--include` / `--exclude` with character-class glob support (`*.[ch]`), `--exclude-dir`
+- **Archive Support**: Transparent auto-decompression for `.gz`, `.bz2`, `.xz` files
+- **Binary & Symlinks**: `-U` / `--binary` for binary-file handling, `-r` vs `-R` symlink-follow distinction
+- **Legacy Aliases**: `-y` alias for `-i` (obsolete case-insensitive flag)
 - **GPU PCRE Lookaround**: Full GPU support for Perl regex lookahead `(?=)`, `(?!)` and lookbehind `(?<=)`, `(?<!)` assertions
 - **GPU Regex Support**: Native Thompson NFA regex execution on Metal and Vulkan GPUs for `-E` extended regex patterns
 - **Context Lines**: Native `-A`, `-B`, `-C` support with proper group separators
 - **Recursive Search**: Native `-r` flag with combined options (`-rn`, `-ri`, `-rc`, `-rl`)
 - **Color Output**: Native `--color` support with ANSI highlighting
-- **Test Coverage**: 42 GNU compatibility tests passing
+- **Test Coverage**: 55+ GNU compatibility tests passing
 
 ## License
 
