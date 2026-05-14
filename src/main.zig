@@ -85,6 +85,7 @@ pub fn main() !u8 {
     var line_buffered = false;
     var label: ?[]const u8 = null;
     var group_separator: ?[]const u8 = "--";
+    var initial_tab = false;
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -106,7 +107,7 @@ pub fn main() !u8 {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case")) {
+        if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--ignore-case") or std.mem.eql(u8, arg, "-y")) {
             options.case_insensitive = true;
         } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--word-regexp")) {
             options.word_boundary = true;
@@ -122,6 +123,8 @@ pub fn main() !u8 {
             null_terminated = true;
         } else if (std.mem.eql(u8, arg, "--line-buffered")) {
             line_buffered = true;
+        } else if (std.mem.eql(u8, arg, "-T") or std.mem.eql(u8, arg, "--initial-tab")) {
+            initial_tab = true;
         } else if (std.mem.eql(u8, arg, "--label") and i + 1 < args.len) {
             i += 1;
             label = args[i];
@@ -542,6 +545,7 @@ pub fn main() !u8 {
         .line_buffered = line_buffered,
         .label = label,
         .group_separator = group_separator,
+        .initial_tab = initial_tab,
     };
 
     // Process each file or stdin
@@ -644,6 +648,7 @@ const OutputOptions = struct {
     line_buffered: bool = false, // --line-buffered: flush after each line
     label: ?[]const u8 = null, // --label: label for stdin in multi-file context
     group_separator: ?[]const u8 = "--", // --group-separator=SEP
+    initial_tab: bool = false, // -T/--initial-tab: align tabs in output
 };
 
 // ANSI color escape codes
@@ -663,6 +668,13 @@ fn writeLineTerminator(null_data: bool) void {
 
 fn getFilenameSeparator(null_terminated: bool) []const u8 {
     return if (null_terminated) &[_]u8{0} else ":";
+}
+
+fn writeFilenameSeparator(null_terminated: bool, initial_tab: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(null_terminated)) catch {};
+    if (initial_tab) {
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\t") catch {};
+    }
 }
 
 fn writeFilenameTerminator(null_terminated: bool) void {
@@ -994,14 +1006,16 @@ fn outputWithContext(
             const line = lines[line_idx];
             const is_match = match_lines.contains(line_idx);
             const separator: []const u8 = if (is_match) ":" else "-";
+            const sep_with_tab = if (output_opts.initial_tab) "\t" else "";
 
             if (filename_prefix) |prefix| {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
                 _ = std.posix.write(std.posix.STDOUT_FILENO, separator) catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, sep_with_tab) catch {};
             }
             if (output_opts.line_numbers) {
                 var num_buf: [16]u8 = undefined;
-                const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{ line_idx + 1, separator }) catch continue;
+                const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}{s}", .{ line_idx + 1, separator, sep_with_tab }) catch continue;
                 _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
             }
             // Use color only for matching lines
@@ -1193,43 +1207,9 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         const count_str = std.fmt.bufPrint(&count_buf, "{d}\n", .{line_count}) catch return .{ .found = found, .had_error = false };
         if (filename_prefix) |prefix| {
             _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
+            writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
-    } else if (output_opts.only_matching) {
-        // Output only the matching text, not the whole line
-        for (result.matches) |match| {
-            if (filename_prefix) |prefix| {
-                _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
-            }
-            if (output_opts.line_numbers) {
-                // Use GPU-computed line number if available, otherwise compute on CPU
-                const line_num = if (match.line_num > 0) match.line_num else blk: {
-                    var ln: u32 = 1;
-                    var pos: usize = 0;
-                    while (pos < match.line_start) : (pos += 1) {
-                        if (text[pos] == '\n') ln += 1;
-                    }
-                    break :blk ln;
-                };
-                var num_buf: [16]u8 = undefined;
-                const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
-                _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
-            }
-            // Output the matched text (with color if enabled)
-            const match_end = match.position + match.match_len;
-            if (match_end <= text.len) {
-                if (output_opts.color_mode == .always) {
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_MATCH_START) catch {};
-                }
-                _ = std.posix.write(std.posix.STDOUT_FILENO, text[match.position..match_end]) catch {};
-                if (output_opts.color_mode == .always) {
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, COLOR_RESET) catch {};
-                }
-            }
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
-        }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
         outputWithContext(text, result.matches, output_opts, filename_prefix, allocator);
@@ -1248,7 +1228,7 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
 
                 if (filename_prefix) |prefix| {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
+                    writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
                 }
                 if (output_opts.byte_offset) {
                     var off_buf: [32]u8 = undefined;
@@ -1267,7 +1247,8 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
                         break :blk current_line_num;
                     };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
+                    const sep_with_tab = if (output_opts.initial_tab) ":\t" else ":";
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{line_num, sep_with_tab}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
@@ -1791,7 +1772,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ line_count, term }) catch return .{ .found = found, .had_error = false };
         if (output_opts.show_filename) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
+            writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
     } else if (output_opts.only_matching) {
@@ -1799,7 +1780,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         for (result.matches) |match| {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
+                writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
             }
             if (output_opts.byte_offset) {
                 var off_buf: [32]u8 = undefined;
@@ -1863,7 +1844,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
 
                 if (output_opts.show_filename) {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
+                    writeFilenameSeparator(output_opts.null_terminated, output_opts.initial_tab);
                 }
                 if (output_opts.byte_offset) {
                     var off_buf: [32]u8 = undefined;
@@ -1882,7 +1863,8 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                         break :blk current_line_num;
                     };
                     var num_buf: [16]u8 = undefined;
-                    const num_str = std.fmt.bufPrint(&num_buf, "{d}:", .{line_num}) catch continue;
+                    const sep_with_tab = if (output_opts.initial_tab) ":\t" else ":";
+                    const num_str = std.fmt.bufPrint(&num_buf, "{d}{s}", .{line_num, sep_with_tab}) catch continue;
                     _ = std.posix.write(std.posix.STDOUT_FILENO, num_str) catch {};
                 }
                 // Output line with color highlighting if enabled
