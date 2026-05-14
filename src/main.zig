@@ -72,6 +72,7 @@ pub fn main() !u8 {
     var before_context: u32 = 0;
     var after_context: u32 = 0;
     var recursive = false;
+    var follow_symlinks = false; // -R vs -r distinction
     var color_mode: ColorMode = .never;
     var suppress_messages = false;
     var max_count: ?usize = null;
@@ -200,8 +201,12 @@ pub fn main() !u8 {
             quiet_mode = true;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--only-matching")) {
             only_matching = true;
-        } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--recursive")) {
+        } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--recursive")) {
             recursive = true;
+            follow_symlinks = false;
+        } else if (std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--dereference-recursive")) {
+            recursive = true;
+            follow_symlinks = true;
         } else if (std.mem.eql(u8, arg, "-d") and i + 1 < args.len) {
             i += 1;
             if (std.mem.eql(u8, args[i], "read")) {
@@ -554,22 +559,18 @@ pub fn main() !u8 {
                     continue;
                 };
                 if (stat.kind == .directory) {
-                    switch (output_opts.directory_action) {
-                        .skip => {
-                            // Skip directories silently
-                        },
-                        .recurse => {
-                            // In recursive mode, always show filenames
-                            var recursive_opts = output_opts;
-                            recursive_opts.show_filename = true;
-                            processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items);
-                        },
-                        .read => {
-                            // Try to read directory as a file (will usually fail)
-                            const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
-                            if (result.found) found_match = true;
-                            if (result.had_error) had_error = true;
-                        },
+                    if (recursive or output_opts.directory_action == .recurse) {
+                        // In recursive mode, always show filenames
+                        var recursive_opts = output_opts;
+                        recursive_opts.show_filename = true;
+                        processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items, follow_symlinks);
+                    } else if (output_opts.directory_action == .skip) {
+                        // Skip directories silently
+                    } else {
+                        // Try to read directory as a file (will usually fail)
+                        const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
+                        if (result.found) found_match = true;
+                        if (result.had_error) had_error = true;
                     }
                 } else {
                     const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
@@ -1477,7 +1478,7 @@ fn matchesAnyPattern(name: []const u8, patterns: []const []const u8) bool {
 }
 
 /// Process a directory recursively
-fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool, include_patterns: []const []const u8, exclude_patterns: []const []const u8, exclude_dir_patterns: []const []const u8) void {
+fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, found_match: *bool, had_error: *bool, quiet_mode: bool, include_patterns: []const []const u8, exclude_patterns: []const []const u8, exclude_dir_patterns: []const []const u8, follow_symlinks: bool) void {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
         if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ path, err });
         had_error.* = true;
@@ -1504,7 +1505,7 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
             // Check exclude-dir patterns
             if (exclude_dir_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_dir_patterns)) continue;
             // Recurse into subdirectory
-            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns);
+            processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns, follow_symlinks);
         } else if (entry.kind == .file) {
             // Check include/exclude patterns
             if (include_patterns.len > 0 and !matchesAnyPattern(entry.name, include_patterns)) continue;
@@ -1513,8 +1514,25 @@ fn processDirectory(allocator: std.mem.Allocator, path: []const u8, all_patterns
             const result = processFile(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts);
             if (result.found) found_match.* = true;
             if (result.had_error) had_error.* = true;
+        } else if (entry.kind == .sym_link and follow_symlinks) {
+            // Follow symlink: check what it points to
+            const target_stat = std.fs.cwd().statFile(full_path) catch {
+                // Broken symlink or can't access - skip
+                continue;
+            };
+            if (target_stat.kind == .directory) {
+                if (entry.name.len > 0 and entry.name[0] == '.') continue;
+                if (exclude_dir_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_dir_patterns)) continue;
+                processDirectory(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts, found_match, had_error, quiet_mode, include_patterns, exclude_patterns, exclude_dir_patterns, follow_symlinks);
+            } else {
+                if (include_patterns.len > 0 and !matchesAnyPattern(entry.name, include_patterns)) continue;
+                if (exclude_patterns.len > 0 and matchesAnyPattern(entry.name, exclude_patterns)) continue;
+                const result = processFile(allocator, full_path, all_patterns, options, backend_mode, config, verbose, output_opts);
+                if (result.found) found_match.* = true;
+                if (result.had_error) had_error.* = true;
+            }
         }
-        // Skip symlinks and other special files
+        // Skip other special files (block devices, etc.)
 
         // For quiet mode, exit early on first match
         if (quiet_mode and found_match.*) return;
