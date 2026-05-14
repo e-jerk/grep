@@ -80,6 +80,8 @@ pub fn main() !u8 {
     var byte_offset = false;
     var binary_files: BinaryFilesMode = .binary;
     var directory_action: DirectoryAction = .read;
+    var null_terminated = false;
+    var line_buffered = false;
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -113,6 +115,10 @@ pub fn main() !u8 {
             suppress_messages = true;
         } else if (std.mem.eql(u8, arg, "-z") or std.mem.eql(u8, arg, "--null-data")) {
             options.null_data = true;
+        } else if (std.mem.eql(u8, arg, "-Z") or std.mem.eql(u8, arg, "--null")) {
+            null_terminated = true;
+        } else if (std.mem.eql(u8, arg, "--line-buffered")) {
+            line_buffered = true;
         } else if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--text")) {
             binary_files = .text;
         } else if (std.mem.eql(u8, arg, "-I")) {
@@ -487,7 +493,7 @@ pub fn main() !u8 {
     var found_match = false;
     var had_error = false;
     var lines_output: usize = 0;
-    const show_filename = if (force_no_filename) false else if (force_filename) true else files.items.len > 1;
+    const show_filename = if (force_no_filename) false else if (force_filename) true else files_with_matches or files_without_match or files.items.len > 1;
 
     // Resolve color mode: 'auto' checks if stdout is a tty
     const effective_color_mode: ColorMode = switch (color_mode) {
@@ -513,6 +519,8 @@ pub fn main() !u8 {
         .null_data = options.null_data,
         .binary_files = binary_files,
         .directory_action = directory_action,
+        .null_terminated = null_terminated,
+        .line_buffered = line_buffered,
     };
 
     // Process each file or stdin
@@ -613,6 +621,8 @@ const OutputOptions = struct {
     null_data: bool = false, // -z: use NUL as line delimiter
     binary_files: BinaryFilesMode = .binary,
     directory_action: DirectoryAction = .read, // -d ACTION
+    null_terminated: bool = false, // -Z: use NUL after filenames
+    line_buffered: bool = false, // --line-buffered: flush after each line
 };
 
 // ANSI color escape codes
@@ -628,6 +638,20 @@ fn getLineTerminator(null_data: bool) []const u8 {
 
 fn writeLineTerminator(null_data: bool) void {
     _ = std.posix.write(std.posix.STDOUT_FILENO, getLineTerminator(null_data)) catch {};
+}
+
+fn getFilenameSeparator(null_terminated: bool) []const u8 {
+    return if (null_terminated) &[_]u8{0} else ":";
+}
+
+fn writeFilenameTerminator(null_terminated: bool) void {
+    _ = std.posix.write(std.posix.STDOUT_FILENO, if (null_terminated) &[_]u8{0} else "\n") catch {};
+}
+
+fn flushStdout() void {
+    // Since we write directly to the fd via posix.write, output is already
+    // unbuffered at the libc level. fsync may help on some platforms.
+    _ = std.posix.fsync(std.posix.STDOUT_FILENO) catch {};
 }
 
 /// Filter matches to only include whole-line matches (-x)
@@ -960,6 +984,7 @@ fn outputWithContext(
             const use_color = output_opts.color_mode == .always and is_match;
             outputLineWithColor(text, line.start, line.end, matches, use_color);
             _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+            if (output_opts.line_buffered) flushStdout();
         }
     }
 }
@@ -1144,7 +1169,7 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         const count_str = std.fmt.bufPrint(&count_buf, "{d}\n", .{line_count}) catch return .{ .found = found, .had_error = false };
         if (filename_prefix) |prefix| {
             _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+            _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
     } else if (output_opts.only_matching) {
@@ -1152,7 +1177,7 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
         for (result.matches) |match| {
             if (filename_prefix) |prefix| {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
             }
             if (output_opts.line_numbers) {
                 // Use GPU-computed line number if available, otherwise compute on CPU
@@ -1199,7 +1224,7 @@ fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, 
 
                 if (filename_prefix) |prefix| {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, prefix) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
                 }
                 if (output_opts.byte_offset) {
                     var off_buf: [32]u8 = undefined;
@@ -1693,7 +1718,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         if (!found) {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                writeLineTerminator(output_opts.null_data);
+                writeFilenameTerminator(output_opts.null_terminated);
             }
         }
         return .{ .found = found, .had_error = false };
@@ -1704,7 +1729,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         if (found) {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                writeLineTerminator(output_opts.null_data);
+                writeFilenameTerminator(output_opts.null_terminated);
             }
         }
         return .{ .found = found, .had_error = false };
@@ -1725,7 +1750,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         const count_str = std.fmt.bufPrint(&count_buf, "{d}{s}", .{ line_count, term }) catch return .{ .found = found, .had_error = false };
         if (output_opts.show_filename) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-            _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+            _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
         }
         _ = std.posix.write(std.posix.STDOUT_FILENO, count_str) catch {};
     } else if (output_opts.only_matching) {
@@ -1733,7 +1758,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
         for (result.matches) |match| {
             if (output_opts.show_filename) {
                 _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
             }
             if (output_opts.byte_offset) {
                 var off_buf: [32]u8 = undefined;
@@ -1767,6 +1792,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 }
             }
             writeLineTerminator(output_opts.null_data);
+            if (output_opts.line_buffered) flushStdout();
         }
     } else if (output_opts.before_context > 0 or output_opts.after_context > 0) {
         // Output with context lines
@@ -1796,7 +1822,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
 
                 if (output_opts.show_filename) {
                     _ = std.posix.write(std.posix.STDOUT_FILENO, filepath) catch {};
-                    _ = std.posix.write(std.posix.STDOUT_FILENO, ":") catch {};
+                    _ = std.posix.write(std.posix.STDOUT_FILENO, getFilenameSeparator(output_opts.null_terminated)) catch {};
                 }
                 if (output_opts.byte_offset) {
                     var off_buf: [32]u8 = undefined;
@@ -1821,6 +1847,7 @@ fn processFile(allocator: std.mem.Allocator, filepath: []const u8, all_patterns:
                 // Output line with color highlighting if enabled
                 outputLineWithColor(text, actual_line_start, line_end, result.matches, output_opts.color_mode == .always);
                 writeLineTerminator(output_opts.null_data);
+                if (output_opts.line_buffered) flushStdout();
             }
         }
     }
