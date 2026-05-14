@@ -79,6 +79,7 @@ pub fn main() !u8 {
     var force_filename = false;
     var byte_offset = false;
     var binary_files: BinaryFilesMode = .binary;
+    var directory_action: DirectoryAction = .read;
     var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (include_patterns.items) |p| allocator.free(p);
@@ -189,6 +190,30 @@ pub fn main() !u8 {
             only_matching = true;
         } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "-R") or std.mem.eql(u8, arg, "--recursive")) {
             recursive = true;
+        } else if (std.mem.eql(u8, arg, "-d") and i + 1 < args.len) {
+            i += 1;
+            if (std.mem.eql(u8, args[i], "read")) {
+                directory_action = .read;
+            } else if (std.mem.eql(u8, args[i], "skip")) {
+                directory_action = .skip;
+            } else if (std.mem.eql(u8, args[i], "recurse")) {
+                directory_action = .recurse;
+            } else {
+                std.debug.print("Invalid -d value: {s}\n", .{args[i]});
+                return 2;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--directories=")) {
+            const val = arg["--directories=".len..];
+            if (std.mem.eql(u8, val, "read")) {
+                directory_action = .read;
+            } else if (std.mem.eql(u8, val, "skip")) {
+                directory_action = .skip;
+            } else if (std.mem.eql(u8, val, "recurse")) {
+                directory_action = .recurse;
+            } else {
+                std.debug.print("Invalid --directories value: {s}\n", .{val});
+                return 2;
+            }
         } else if (std.mem.eql(u8, arg, "--include") and i + 1 < args.len) {
             i += 1;
             try include_patterns.append(allocator, try allocator.dupe(u8, args[i]));
@@ -487,6 +512,7 @@ pub fn main() !u8 {
         .lines_output = &lines_output,
         .null_data = options.null_data,
         .binary_files = binary_files,
+        .directory_action = directory_action,
     };
 
     // Process each file or stdin
@@ -503,7 +529,7 @@ pub fn main() !u8 {
                 const result = processStdin(allocator, patterns.items, options, backend_mode, config, verbose, output_opts, if (show_filename) "(standard input)" else null);
                 if (result.found) found_match = true;
                 if (result.had_error) had_error = true;
-            } else if (recursive) {
+            } else {
                 // Check if path is a directory
                 const stat = std.fs.cwd().statFile(filepath) catch |err| {
                     if (!output_opts.suppress_messages) std.debug.print("grep: {s}: {}\n", .{ filepath, err });
@@ -511,19 +537,28 @@ pub fn main() !u8 {
                     continue;
                 };
                 if (stat.kind == .directory) {
-                    // In recursive mode, always show filenames
-                    var recursive_opts = output_opts;
-                    recursive_opts.show_filename = true;
-                    processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items);
+                    switch (output_opts.directory_action) {
+                        .skip => {
+                            // Skip directories silently
+                        },
+                        .recurse => {
+                            // In recursive mode, always show filenames
+                            var recursive_opts = output_opts;
+                            recursive_opts.show_filename = true;
+                            processDirectory(allocator, filepath, patterns.items, options, backend_mode, config, verbose, recursive_opts, &found_match, &had_error, quiet_mode, include_patterns.items, exclude_patterns.items, exclude_dir_patterns.items);
+                        },
+                        .read => {
+                            // Try to read directory as a file (will usually fail)
+                            const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
+                            if (result.found) found_match = true;
+                            if (result.had_error) had_error = true;
+                        },
+                    }
                 } else {
                     const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
                     if (result.found) found_match = true;
                     if (result.had_error) had_error = true;
                 }
-            } else {
-                const result = processFile(allocator, filepath, patterns.items, options, backend_mode, config, verbose, output_opts);
-                if (result.found) found_match = true;
-                if (result.had_error) had_error = true;
             }
             // For quiet mode, exit early on first match
             if (quiet_mode and found_match) return 0;
@@ -554,6 +589,12 @@ const BinaryFilesMode = enum {
     text, // -a: treat as text
 };
 
+const DirectoryAction = enum {
+    read, // -d read: read directories as if they were files
+    skip, // -d skip: skip directories silently
+    recurse, // -d recurse or -r: recurse into directories
+};
+
 const OutputOptions = struct {
     count_only: bool = false,
     line_numbers: bool = false,
@@ -571,6 +612,7 @@ const OutputOptions = struct {
     lines_output: *usize = undefined, // mutable counter for -m
     null_data: bool = false, // -z: use NUL as line delimiter
     binary_files: BinaryFilesMode = .binary,
+    directory_action: DirectoryAction = .read, // -d ACTION
 };
 
 // ANSI color escape codes
@@ -1839,6 +1881,8 @@ fn printUsage() void {
         \\  -o, --only-matching       print only matched parts              [GPU+SIMD]
         \\  -q, --quiet, --silent     suppress output (exit status only)    [GPU+SIMD]
         \\  -r, -R, --recursive       search directories recursively        [GPU+SIMD]
+        \\  -d ACTION, --directories=ACTION  how to handle directories:
+        \\                              read=as files, skip=silently, recurse=into
         \\  -V, --verbose             print backend and timing info
         \\
         \\Backend selection:
