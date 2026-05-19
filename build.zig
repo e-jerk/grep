@@ -27,6 +27,9 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "gnu_build", gnu);
     const build_options_module = build_options.createModule();
 
+    // Safe module for zust transpiled code
+    const safe_module = b.createModule(.{ .root_source_file = b.path("../zust/src/safe.zig") });
+
     // GNU grep dependency
     const gnu_grep = b.dependency("gnu_grep", .{});
 
@@ -106,33 +109,33 @@ pub fn build(b: *std.Build) void {
         fn add(compile: *std.Build.Step.Compile, builder: *std.Build, gnu_dep: *std.Build.Dependency, flags: []const []const u8) void {
             // Add GNU grep source files
             for (gnu_src_files) |src| {
-                compile.addCSourceFile(.{
+                compile.root_module.addCSourceFile(.{
                     .file = gnu_dep.path(src),
                     .flags = flags,
                 });
             }
             // Add gnulib source files
             for (gnu_lib_files) |src| {
-                compile.addCSourceFile(.{
+                compile.root_module.addCSourceFile(.{
                     .file = gnu_dep.path(src),
                     .flags = flags,
                 });
             }
             // Add our wrapper and stub files
-            compile.addCSourceFile(.{
+            compile.root_module.addCSourceFile(.{
                 .file = builder.path("src/gnu/gnu_grep_wrapper.c"),
                 .flags = flags,
             });
-            compile.addCSourceFile(.{
+            compile.root_module.addCSourceFile(.{
                 .file = builder.path("src/gnu/gnulib_stubs.c"),
                 .flags = flags,
             });
             // Include paths - our config.h first, then gnulib lib, then src
-            compile.addIncludePath(builder.path("src/gnu")); // Our config.h and stubs
-            compile.addIncludePath(gnu_dep.path("lib"));
-            compile.addIncludePath(gnu_dep.path("src"));
+            compile.root_module.addIncludePath(builder.path("src/gnu")); // Our config.h and stubs
+            compile.root_module.addIncludePath(gnu_dep.path("lib"));
+            compile.root_module.addIncludePath(gnu_dep.path("src"));
             // Link libc - iconv is included in libc on both macOS and glibc (Linux)
-            compile.linkLibC();
+            compile.root_module.link_libc = true;
         }
     }.add;
 
@@ -209,7 +212,7 @@ pub fn build(b: *std.Build) void {
     metal_preprocess.addFileArg(shaders_common.path("metal/string_ops.h"));
     metal_preprocess.addFileArg(shaders_common.path("metal/regex_ops.h"));
     metal_preprocess.addFileArg(b.path("src/shaders/search.metal"));
-    const preprocessed_metal = metal_preprocess.captureStdOut();
+    const preprocessed_metal = metal_preprocess.captureStdOut(.{});
 
     // Create embedded Metal shader module
     const metal_module = b.addModule("metal_shader", .{
@@ -230,6 +233,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "metal_shader", .module = metal_module },
             .{ .name = "e_jerk_gpu", .module = e_jerk_gpu_module },
             .{ .name = "regex", .module = regex_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -239,6 +243,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
             .{ .name = "regex", .module = regex_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -249,6 +254,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
             .{ .name = "cpu_optimized", .module = cpu_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -257,6 +263,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/pcre.zig"),
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -276,6 +283,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
                 .{ .name = "pcre", .module = pcre_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
@@ -284,34 +292,34 @@ pub fn build(b: *std.Build) void {
     addGnuGrepSources(exe, b, gnu_grep, c_flags);
 
     // Add PCRE2 wrapper C source
-    exe.addCSourceFile(.{
+    exe.root_module.addCSourceFile(.{
         .file = b.path("src/gnu/pcre2_wrapper.c"),
         .flags = c_flags,
     });
-    exe.addIncludePath(b.path("src/gnu")); // For pcre2_wrapper.h
+    exe.root_module.addIncludePath(b.path("src/gnu")); // For pcre2_wrapper.h
 
     // Link PCRE2 library (from Homebrew on macOS, system on Linux)
     if (is_macos) {
         exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/pcre2/lib" });
         exe.root_module.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/pcre2/include" });
     }
-    exe.linkSystemLibrary("pcre2-8");
+    exe.root_module.linkSystemLibrary("pcre2-8", .{});
 
     // Platform-specific linking based on enabled backends
     if (is_native) {
         if (enable_metal) {
-            exe.linkFramework("Foundation");
-            exe.linkFramework("Metal");
-            exe.linkFramework("QuartzCore");
-            exe.linkFramework("CoreFoundation");
+            exe.root_module.linkFramework("Foundation", .{});
+            exe.root_module.linkFramework("Metal", .{});
+            exe.root_module.linkFramework("QuartzCore", .{});
+            exe.root_module.linkFramework("CoreFoundation", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 // MoltenVK from Homebrew for Vulkan on macOS
                 exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                exe.linkSystemLibrary("MoltenVK");
+                exe.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                exe.linkSystemLibrary("vulkan");
+                exe.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -345,6 +353,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
@@ -354,16 +363,16 @@ pub fn build(b: *std.Build) void {
 
     if (is_native) {
         if (enable_metal) {
-            bench_exe.linkFramework("Foundation");
-            bench_exe.linkFramework("Metal");
-            bench_exe.linkFramework("QuartzCore");
+            bench_exe.root_module.linkFramework("Foundation", .{});
+            bench_exe.root_module.linkFramework("Metal", .{});
+            bench_exe.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 bench_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                bench_exe.linkSystemLibrary("MoltenVK");
+                bench_exe.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                bench_exe.linkSystemLibrary("vulkan");
+                bench_exe.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -393,22 +402,23 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     if (is_native) {
         if (enable_metal) {
-            smoke_exe.linkFramework("Foundation");
-            smoke_exe.linkFramework("Metal");
-            smoke_exe.linkFramework("QuartzCore");
+            smoke_exe.root_module.linkFramework("Foundation", .{});
+            smoke_exe.root_module.linkFramework("Metal", .{});
+            smoke_exe.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 smoke_exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                smoke_exe.linkSystemLibrary("MoltenVK");
+                smoke_exe.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                smoke_exe.linkSystemLibrary("vulkan");
+                smoke_exe.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -437,22 +447,23 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     if (is_native) {
         if (enable_metal) {
-            main_tests.linkFramework("Foundation");
-            main_tests.linkFramework("Metal");
-            main_tests.linkFramework("QuartzCore");
+            main_tests.root_module.linkFramework("Foundation", .{});
+            main_tests.root_module.linkFramework("Metal", .{});
+            main_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 main_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                main_tests.linkSystemLibrary("MoltenVK");
+                main_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                main_tests.linkSystemLibrary("vulkan");
+                main_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -470,22 +481,23 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     if (is_native) {
         if (enable_metal) {
-            unit_tests.linkFramework("Foundation");
-            unit_tests.linkFramework("Metal");
-            unit_tests.linkFramework("QuartzCore");
+            unit_tests.root_module.linkFramework("Foundation", .{});
+            unit_tests.root_module.linkFramework("Metal", .{});
+            unit_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                unit_tests.linkSystemLibrary("MoltenVK");
+                unit_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                unit_tests.linkSystemLibrary("vulkan");
+                unit_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -521,22 +533,23 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "spirv", .module = spirv_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     if (is_native) {
         if (enable_metal) {
-            regex_tests.linkFramework("Foundation");
-            regex_tests.linkFramework("Metal");
-            regex_tests.linkFramework("QuartzCore");
+            regex_tests.root_module.linkFramework("Foundation", .{});
+            regex_tests.root_module.linkFramework("Metal", .{});
+            regex_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 regex_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                regex_tests.linkSystemLibrary("MoltenVK");
+                regex_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                regex_tests.linkSystemLibrary("vulkan");
+                regex_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -549,4 +562,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_main_tests.step);
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_regex_tests.step);
+
+    // Analyze step - run zust-analyzer on source files
+    const analyze_cmd = b.addSystemCommand(&.{
+        "/Users/barrett/github.com/e-jerk/zust/zig-out/bin/zust-analyze",
+        "src",
+    });
+    const analyze_step = b.step("analyze", "Run zust analyzer on source files");
+    analyze_step.dependOn(&analyze_cmd.step);
 }

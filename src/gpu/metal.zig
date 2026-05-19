@@ -77,6 +77,7 @@ pub const MetalSearcher = struct {
 
         // Build capabilities from actual hardware attributes
         const capabilities = mod.GpuCapabilities{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .max_threads_per_group = @intCast(max_threads),
             .max_buffer_size = @min(max_buffer_len, MAX_GPU_BUFFER_SIZE),
             .recommended_memory = recommended_memory,
@@ -84,8 +85,8 @@ pub const MetalSearcher = struct {
             .device_type = if (is_high_perf) .discrete else .integrated,
         };
 
-        const self = try allocator.create(Self);
-        self.* = Self{
+        const self = try safe.Box(Self).init(allocator, undefined);
+        self[0] = Self{
             .device = device,
             .command_queue = command_queue,
             .bmh_pipeline = bmh_pipeline,
@@ -105,6 +106,7 @@ pub const MetalSearcher = struct {
         self.allocator.destroy(self);
     }
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn search(self: *Self, text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
         if (pattern.len == 0 or pattern.len > mod.MAX_PATTERN_LEN) {
             return error.InvalidPatternLength;
@@ -117,16 +119,18 @@ pub const MetalSearcher = struct {
         var text_buffer = self.device.newBufferWithLengthOptions(text.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer text_buffer.release();
         if (text_buffer.contents()) |ptr| {
-            const text_ptr: [*]u8 = @ptrCast(ptr);
-            @memcpy(text_ptr[0..text.len], text);
+            const text_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(ptr);
+            safe.SimdUtils.copy(text_ptr[0..text.len], text);
         }
 
         // Create pattern buffer and copy data
         var pattern_buffer = self.device.newBufferWithLengthOptions(pattern.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer pattern_buffer.release();
         if (pattern_buffer.contents()) |ptr| {
-            const pattern_ptr: [*]u8 = @ptrCast(ptr);
-            @memcpy(pattern_ptr[0..pattern.len], pattern);
+            const pattern_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(ptr);
+            safe.SimdUtils.copy(pattern_ptr[0..pattern.len], pattern);
         }
 
         // Create skip table buffer and copy data
@@ -134,8 +138,9 @@ pub const MetalSearcher = struct {
         var skip_buffer = self.device.newBufferWithLengthOptions(256, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer skip_buffer.release();
         if (skip_buffer.contents()) |ptr| {
-            const skip_ptr: [*]u8 = @ptrCast(ptr);
-            @memcpy(skip_ptr[0..256], &skip_table);
+            const skip_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(ptr);
+            safe.SimdUtils.copy(skip_ptr[0..256], &skip_table);
         }
 
         // Create config buffer
@@ -151,21 +156,26 @@ pub const MetalSearcher = struct {
         var counters_buffer = self.device.newBufferWithLengthOptions(8, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer counters_buffer.release();
 
-        const counters_ptr: *[2]u32 = @ptrCast(@alignCast(counters_buffer.contents()));
+        const counters_ptr: *[2]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(counters_buffer.contents()));
         counters_ptr[0] = 0;
         counters_ptr[1] = 0;
 
         // Use a conservative thread count to avoid GPU overload
         // Each thread processes a larger chunk to keep total threads manageable
         const MAX_THREADS: usize = 16384; // Well under Metal's limits
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         const chunk_size: u32 = @intCast(@max(64, (text.len + MAX_THREADS - 1) / MAX_THREADS));
         const num_threads = @min(MAX_THREADS, (text.len + chunk_size - 1) / chunk_size);
 
         // Set up config with calculated chunk size
         if (config_buffer.contents()) |ptr| {
-            const config_ptr: *SearchConfig = @ptrCast(@alignCast(ptr));
-            config_ptr.* = SearchConfig{
+            const config_ptr: *SearchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            config_ptr[0] = SearchConfig{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .text_len = @intCast(text.len),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .pattern_len = @intCast(pattern.len),
                 .num_patterns = 1,
                 .flags = options.toFlags(),
@@ -201,14 +211,16 @@ pub const MetalSearcher = struct {
         const matches = try allocator.alloc(MatchResult, num_to_copy);
 
         if (num_to_copy > 0) {
-            const results_ptr: [*]MatchResult = @ptrCast(@alignCast(results_buffer.contents()));
-            @memcpy(matches, results_ptr[0..num_to_copy]);
+            const results_ptr: [*]MatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(results_buffer.contents()));
+            safe.SimdUtils.copy(matches, results_ptr[0..num_to_copy]);
         }
 
         return SearchResult{ .matches = matches, .total_matches = total_matches, .allocator = allocator };
     }
 
     /// GPU-accelerated regex pattern search
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn searchRegex(self: *Self, text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
         if (text.len > MAX_GPU_BUFFER_SIZE) return error.TextTooLarge;
 
@@ -225,15 +237,20 @@ pub const MetalSearcher = struct {
         defer line_lengths.deinit(allocator);
 
         var line_start: usize = 0;
+        // safe-transpile: for with index access requires manual review
         for (text, 0..) |c, i| {
             if (c == '\n') {
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 try line_offsets.append(allocator, @intCast(line_start));
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 try line_lengths.append(allocator, @intCast(i - line_start));
                 line_start = i + 1;
             }
         }
         if (line_start < text.len) {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             try line_offsets.append(allocator, @intCast(line_start));
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             try line_lengths.append(allocator, @intCast(text.len - line_start));
         }
 
@@ -250,7 +267,7 @@ pub const MetalSearcher = struct {
         var text_buffer = self.device.newBufferWithLengthOptions(text.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer text_buffer.release();
         if (text_buffer.contents()) |ptr| {
-            @memcpy(@as([*]u8, @ptrCast(ptr))[0..text.len], text);
+            safe.SimdUtils.copy(@as([*]u8, @ptrCast(ptr))[0..text.len], text);
         }
 
         // Create states buffer
@@ -259,8 +276,9 @@ pub const MetalSearcher = struct {
         defer states_buffer.release();
         if (states_size > 0) {
             if (states_buffer.contents()) |ptr| {
-                const dst: [*]RegexState = @ptrCast(@alignCast(ptr));
-                @memcpy(dst[0..gpu_regex.states.len], gpu_regex.states);
+                const dst: [*]RegexState = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                    @ptrCast(@alignCast(ptr));
+                safe.SimdUtils.copy(dst[0..gpu_regex.states.len], gpu_regex.states);
             }
         }
 
@@ -270,17 +288,20 @@ pub const MetalSearcher = struct {
         defer bitmaps_buffer.release();
         if (bitmaps_size > 0) {
             if (bitmaps_buffer.contents()) |ptr| {
-                const dst: [*]u32 = @ptrCast(@alignCast(ptr));
-                @memcpy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+                const dst: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                    @ptrCast(@alignCast(ptr));
+                safe.SimdUtils.copy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
             }
         }
 
         // Create config buffer
         const config = RegexSearchConfig{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .text_len = @intCast(text.len),
             .num_states = gpu_regex.header.num_states,
             .start_state = gpu_regex.header.start_state,
             .header_flags = gpu_regex.header.flags,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .num_bitmaps = @intCast(gpu_regex.bitmaps.len / 8),
             .max_results = MAX_RESULTS,
             .flags = options.toFlags(),
@@ -288,14 +309,16 @@ pub const MetalSearcher = struct {
         var config_buffer = self.device.newBufferWithLengthOptions(@sizeOf(RegexSearchConfig), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer config_buffer.release();
         if (config_buffer.contents()) |ptr| {
-            @as(*RegexSearchConfig, @ptrCast(@alignCast(ptr))).* = config;
+            @as(*RegexSearchConfig, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr))).* = config;
         }
 
         // Create header buffer
         var header_buffer = self.device.newBufferWithLengthOptions(@sizeOf(mod.RegexHeader), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer header_buffer.release();
         if (header_buffer.contents()) |ptr| {
-            @as(*mod.RegexHeader, @ptrCast(@alignCast(ptr))).* = gpu_regex.header;
+            @as(*mod.RegexHeader, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr))).* = gpu_regex.header;
         }
 
         // Create results buffer
@@ -306,7 +329,8 @@ pub const MetalSearcher = struct {
         // Create counters buffer
         var counters_buffer = self.device.newBufferWithLengthOptions(8, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer counters_buffer.release();
-        const counters_ptr: *[2]u32 = @ptrCast(@alignCast(counters_buffer.contents()));
+        const counters_ptr: *[2]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(counters_buffer.contents()));
         counters_ptr[0] = 0;
         counters_ptr[1] = 0;
 
@@ -314,13 +338,13 @@ pub const MetalSearcher = struct {
         var line_offsets_buffer = self.device.newBufferWithLengthOptions(line_offsets.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_offsets_buffer.release();
         if (line_offsets_buffer.contents()) |ptr| {
-            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
+            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
         }
 
         var line_lengths_buffer = self.device.newBufferWithLengthOptions(line_lengths.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_lengths_buffer.release();
         if (line_lengths_buffer.contents()) |ptr| {
-            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
+            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
         }
 
         // Execute regex matching in batches (Metal max grid width is 65536)
@@ -332,7 +356,9 @@ pub const MetalSearcher = struct {
 
             // Update config buffer with line_offset for this batch
             if (config_buffer.contents()) |ptr| {
-                const cfg_ptr = @as(*RegexSearchConfig, @ptrCast(@alignCast(ptr)));
+                const cfg_ptr = @as(*RegexSearchConfig, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                    @ptrCast(@alignCast(ptr)));
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 cfg_ptr.line_offset = @intCast(batch_start);
             }
 
@@ -371,7 +397,8 @@ pub const MetalSearcher = struct {
         const matches = try allocator.alloc(MatchResult, num_to_copy);
 
         if (num_to_copy > 0) {
-            const regex_results_ptr: [*]RegexMatchResult = @ptrCast(@alignCast(results_buffer.contents()));
+            const regex_results_ptr: [*]RegexMatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(results_buffer.contents()));
             for (0..num_to_copy) |i| {
                 const r = regex_results_ptr[i];
                 matches[i] = MatchResult{

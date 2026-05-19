@@ -20,6 +20,7 @@ const UPPER_Z_VEC16: Vec16 = @splat('Z');
 const CASE_DIFF_VEC16: Vec16 = @splat(32);
 
 /// CPU-based search using SIMD-optimized Boyer-Moore-Horspool algorithm
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     // Handle invert_match separately - find non-matching lines
     if (options.invert_match) {
@@ -44,7 +45,7 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
     var total_matches: u64 = 0;
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = undefined;
+    var lower_pattern_buf: [1024]u8 = .{};
     const lower_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];
@@ -65,9 +66,12 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
 
             if (valid) {
                 try matches.append(allocator, MatchResult{
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     .position = @intCast(pos),
                     .pattern_idx = 0,
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     .match_len = @intCast(pattern.len),
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     .line_start = @intCast(findLineStartSIMD(text, pos)),
                 });
                 total_matches += 1;
@@ -87,6 +91,7 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
 }
 
 /// SIMD-optimized pattern matching at a specific position
+// safe-transpile: function uses raw slice parameter — consider safe.String
 inline fn matchAtPositionSIMD(text: []const u8, pos: usize, pattern: []const u8, case_insensitive: bool) bool {
     if (pos + pattern.len > text.len) return false;
 
@@ -135,6 +140,7 @@ inline fn toLowerChar(c: u8) u8 {
 }
 
 /// Convert slice to lowercase
+// safe-transpile: function uses raw slice parameter — consider safe.String
 inline fn toLowerSlice(src: []const u8, dst: []u8) void {
     var i: usize = 0;
     // Process 16 bytes at a time
@@ -152,6 +158,7 @@ inline fn toLowerSlice(src: []const u8, dst: []u8) void {
 }
 
 /// SIMD-optimized line start finder
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findLineStartSIMD(text: []const u8, pos: usize) usize {
     if (pos == 0) return 0;
 
@@ -188,6 +195,7 @@ fn findLineStartSIMD(text: []const u8, pos: usize) usize {
 }
 
 /// SIMD-optimized search for all lines (empty pattern)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -207,9 +215,11 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
             for (0..32) |j| {
                 if (text[i + j] == '\n') {
                     try matches.append(allocator, MatchResult{
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         .position = @intCast(line_start),
                         .pattern_idx = 0,
                         .match_len = 0,
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         .line_start = @intCast(line_start),
                     });
                     total_matches += 1;
@@ -224,9 +234,11 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
     while (i < text.len) {
         if (text[i] == '\n') {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
                 .match_len = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;
@@ -238,9 +250,11 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
     // Don't forget the last line if it doesn't end with newline
     if (line_start < text.len) {
         try matches.append(allocator, MatchResult{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .position = @intCast(line_start),
             .pattern_idx = 0,
             .match_len = 0,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .line_start = @intCast(line_start),
         });
         total_matches += 1;
@@ -251,6 +265,7 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
 }
 
 /// Search for lines that don't contain the pattern (for -v/--invert-match)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -258,7 +273,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
     var total_matches: u64 = 0;
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = undefined;
+    var lower_pattern_buf: [1024]u8 = .{};
     const lower_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];
@@ -280,9 +295,12 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
         // For invert match, we want lines that DON'T have matches
         if (!has_match) {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(line.len),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;
@@ -297,6 +315,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
 }
 
 /// SIMD-optimized newline finder
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findNextNewlineSIMD(text: []const u8, start: usize) usize {
     var i = start;
 
@@ -324,6 +343,7 @@ fn findNextNewlineSIMD(text: []const u8, start: usize) usize {
 }
 
 /// SIMD-optimized check if a line contains the pattern
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn lineContainsPatternSIMD(line: []const u8, pattern: []const u8, options: SearchOptions) bool {
     if (line.len < pattern.len) return false;
 
@@ -350,6 +370,7 @@ fn lineContainsPatternSIMD(line: []const u8, pattern: []const u8, options: Searc
     return false;
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn checkWordBoundary(text: []const u8, start: usize, end: usize) bool {
     if (start > 0 and isWordChar(text[start - 1])) return false;
     if (end < text.len and isWordChar(text[end])) return false;
@@ -362,6 +383,7 @@ inline fn isWordChar(c: u8) bool {
 
 /// CPU-based regex search using Thompson NFA
 /// Supports BRE (Basic Regular Expressions) and ERE (Extended Regular Expressions)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     // Handle invert_match separately
     if (options.invert_match) {
@@ -378,7 +400,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    defer if (ere_pattern) |p| allocator.free(p);
+    // safe-transpile: free removed (memory owned by safe type);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -409,8 +431,11 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
     // Find all matches
     const all_matches = try compiled.findAll(text, allocator);
     defer {
-        for (all_matches) |*m| m.deinit();
-        allocator.free(all_matches);
+        for (0..all_matches.len) |__zust_i| {
+            var m = &all_matches[__zust_i];
+            m.deinit();
+        }
+        // safe-transpile: free removed (memory owned by safe type);
     }
 
     for (all_matches) |m| {
@@ -422,9 +447,12 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
         const line_start = findLineStartSIMD(text, m.start);
 
         try matches.append(allocator, MatchResult{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .position = @intCast(m.start),
             .pattern_idx = 0,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .match_len = @intCast(m.end - m.start),
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .line_start = @intCast(line_start),
         });
         total_matches += 1;
@@ -435,6 +463,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
 }
 
 /// Search for lines that don't match the regex pattern (for -v/--invert-match)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -446,7 +475,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    defer if (ere_pattern) |p| allocator.free(p);
+    // safe-transpile: free removed (memory owned by safe type);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -481,9 +510,12 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
         // For invert match, we want lines that DON'T have matches
         if (!has_match) {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(line.len),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;
@@ -499,6 +531,8 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
 /// Convert BRE (Basic Regular Expression) pattern to ERE (Extended Regular Expression)
 /// In BRE: \+ \? \| \( \) \{ \} are special, unescaped versions are literal
 /// In ERE: + ? | ( ) { } are special, escaped versions are literal
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
     var result: std.ArrayListUnmanaged(u8) = .{};
     defer result.deinit(allocator);

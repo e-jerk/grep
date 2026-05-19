@@ -28,15 +28,16 @@ pub const CompiledPcreRegex = struct {
     supports_gpu: bool, // True if pattern can run on GPU
 
     pub fn deinit(self: *CompiledPcreRegex) void {
-        self.allocator.free(self.states);
+        // safe-transpile: free removed (memory owned by safe type);
         if (self.bitmaps.len > 0) {
-            self.allocator.free(self.bitmaps);
+            // safe-transpile: free removed (memory owned by safe type);
         }
     }
 };
 
 /// Check if a PCRE pattern can be compiled to GPU format
 /// Returns true if all features are supported on GPU
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn canCompileToGpu(pattern: []const u8) bool {
     var i: usize = 0;
     while (i < pattern.len) {
@@ -93,6 +94,7 @@ pub fn canCompileToGpu(pattern: []const u8) bool {
 
 /// Compile a PCRE pattern for GPU execution
 /// Falls back to CPU-only mode if pattern uses unsupported features
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn compileForGpu(pattern: []const u8, case_insensitive: bool, allocator: std.mem.Allocator) !CompiledPcreRegex {
     // Check if pattern can be compiled to GPU
     if (!canCompileToGpu(pattern)) {
@@ -113,7 +115,7 @@ pub fn compileForGpu(pattern: []const u8, case_insensitive: bool, allocator: std
 
     // Pre-process pattern to convert PCRE syntax to extended ERE
     var preprocessed = try preprocessPcrePattern(pattern, allocator);
-    defer allocator.free(preprocessed.pattern);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Compile the base pattern using the standard regex library
     var cpu_regex = regex_lib.Regex.compile(allocator, preprocessed.pattern, .{
@@ -148,11 +150,12 @@ const PreprocessResult = struct {
     extensions: []PcreExtension,
 };
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn preprocessPcrePattern(pattern: []const u8, allocator: std.mem.Allocator) !PreprocessResult {
     // For now, pass through the pattern without modification
     // The PCRE extensions will be handled by the NFA converter
     var result = try allocator.alloc(u8, pattern.len);
-    @memcpy(result, pattern);
+    safe.SimdUtils.copy(result, pattern);
 
     return PreprocessResult{
         .pattern = result,
@@ -177,7 +180,7 @@ fn convertToGpuFormatWithPcre(cpu_regex: *regex_lib.Regex, _: []const PcreExtens
 
     // Allocate GPU state array
     const gpu_states = try allocator.alloc(RegexState, states.len);
-    errdefer allocator.free(gpu_states);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Allocate bitmap buffer
     const bitmap_words = num_char_classes * BITMAP_WORDS_PER_CLASS;
@@ -185,18 +188,21 @@ fn convertToGpuFormatWithPcre(cpu_regex: *regex_lib.Regex, _: []const PcreExtens
         try allocator.alloc(u32, bitmap_words)
     else
         @constCast(&[_]u32{});
-    errdefer if (bitmap_words > 0) allocator.free(bitmaps);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Convert states
     var bitmap_offset: u32 = 0;
+    // safe-transpile: for with index access requires manual review
     for (states, 0..) |state, i| {
         gpu_states[i] = convertState(state, &bitmap_offset, bitmaps);
     }
 
     // Build header
     const header = RegexHeader{
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         .num_states = @intCast(states.len),
         .start_state = cpu_regex.start_state,
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         .num_groups = @intCast(cpu_regex.num_groups),
         .flags = buildHeaderFlags(cpu_regex),
     };
@@ -214,7 +220,9 @@ fn convertState(state: regex_lib.State, bitmap_offset: *u32, bitmaps: []u32) Reg
     var gpu_state = RegexState{
         .type = @intFromEnum(state.type),
         .flags = 0,
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         .out = if (state.out == regex_lib.State.NONE) 0xFFFF else @intCast(@min(state.out, 0xFFFF)),
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         .out2 = if (state.out2 == regex_lib.State.NONE) 0xFFFF else @intCast(@min(state.out2, 0xFFFF)),
         .literal_char = 0,
         .group_idx = 0,
@@ -249,6 +257,7 @@ fn convertState(state: regex_lib.State, bitmap_offset: *u32, bitmaps: []u32) Reg
             bitmap_offset.* += BITMAP_WORDS_PER_CLASS;
         },
         .group_start, .group_end => {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             gpu_state.group_idx = @intCast(state.data.group_idx);
         },
         .lookahead_pos, .lookahead_neg, .lookbehind_pos, .lookbehind_neg => {
@@ -257,6 +266,7 @@ fn convertState(state: regex_lib.State, bitmap_offset: *u32, bitmaps: []u32) Reg
             // - out2 stores dummy end state (shader uses STATE_MATCH check)
             // - bitmap_offset stores fixed length for lookbehind
             const la_data = state.data.lookaround;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             gpu_state.group_idx = @intCast(@min(la_data.sub_pattern_start, 0xFF));
             gpu_state.out2 = 0xFFFF; // Shader relies on STATE_MATCH in sub-pattern
             gpu_state.bitmap_offset = la_data.sub_pattern_len;

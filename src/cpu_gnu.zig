@@ -23,6 +23,7 @@ extern fn gnu_grep_get_error() ?[*:0]const u8;
 /// For consistent benchmark comparisons with other backends (which count occurrences),
 /// this implementation delegates to the optimized backend which uses the same
 /// gnulib-derived algorithms for string matching but counts individual occurrences.
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     // Delegate to optimized backend for occurrence-based matching
     // GNU grep's native functions are line-oriented, making direct comparison unfair
@@ -32,12 +33,14 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
 /// CPU-based regex search - falls back to optimized backend for now
 /// GNU grep's regex compilation has memory issues with quantifiers, so we use the
 /// optimized Zig regex implementation instead.
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     // Use optimized backend for regex - GNU regex has memory issues with quantifiers
     return cpu_optimized.searchRegex(text, pattern, options, allocator);
 }
 
 /// Find line start position
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findLineStart(text: []const u8, pos: usize) usize {
     if (pos == 0) return 0;
     var i = pos - 1;
@@ -49,6 +52,7 @@ fn findLineStart(text: []const u8, pos: usize) usize {
 }
 
 /// Find next newline position
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findNextNewline(text: []const u8, start: usize) usize {
     var i = start;
     while (i < text.len) : (i += 1) {
@@ -58,6 +62,7 @@ fn findNextNewline(text: []const u8, start: usize) usize {
 }
 
 /// Check word boundary
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn checkWordBoundary(text: []const u8, start: usize, end: usize) bool {
     if (start > 0 and isWordChar(text[start - 1])) return false;
     if (end < text.len and isWordChar(text[end])) return false;
@@ -69,6 +74,7 @@ inline fn isWordChar(c: u8) bool {
 }
 
 /// Search for all lines (empty pattern)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -80,9 +86,11 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
     while (i < text.len) : (i += 1) {
         if (text[i] == '\n') {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
                 .match_len = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;
@@ -93,9 +101,11 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
     // Last line without newline
     if (line_start < text.len) {
         try matches.append(allocator, MatchResult{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .position = @intCast(line_start),
             .pattern_idx = 0,
             .match_len = 0,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .line_start = @intCast(line_start),
         });
         total_matches += 1;
@@ -106,6 +116,7 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
 }
 
 /// Search for lines that don't contain the pattern (for -v/--invert-match)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -113,6 +124,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
     var total_matches: u64 = 0;
 
     // Compile pattern once
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const ctx = gnu_grep_compile_fixed(pattern.ptr, @intCast(pattern.len), options.case_insensitive);
     defer gnu_grep_free(ctx);
 
@@ -126,6 +138,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
         var has_match = false;
         if (ctx != null and line.len >= pattern.len) {
             var match_start: c_long = 0;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             const match_len = gnu_grep_execute(ctx.?, line.ptr, @intCast(line.len), &match_start);
             has_match = match_len >= 0;
         }
@@ -133,9 +146,12 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
         // For invert match, we want lines that DON'T have matches
         if (!has_match) {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(line.len),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;
@@ -149,6 +165,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
 }
 
 /// Search for lines that don't match the regex pattern (for -v/--invert-match)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -156,6 +173,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
     var total_matches: u64 = 0;
 
     // Compile pattern once
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const ctx = gnu_grep_compile_regex(pattern.ptr, @intCast(pattern.len), options.case_insensitive, options.extended);
     defer gnu_grep_free(ctx);
 
@@ -169,6 +187,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
         var has_match = false;
         if (ctx != null) {
             var match_start: c_long = 0;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             const match_len = gnu_grep_execute(ctx.?, line.ptr, @intCast(line.len), &match_start);
             has_match = match_len >= 0;
         }
@@ -176,9 +195,12 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
         // For invert match, we want lines that DON'T have matches
         if (!has_match) {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(line.len),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
             });
             total_matches += 1;

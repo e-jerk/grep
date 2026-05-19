@@ -60,6 +60,7 @@ pub const PcreRegex = struct {
     const Self = @This();
 
     /// Compile a Perl regex pattern
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn compile(pattern: []const u8, options: SearchOptions) !Self {
         const ctx = pcre2_compile_pattern(
             pattern.ptr,
@@ -82,11 +83,12 @@ pub const PcreRegex = struct {
     }
 
     /// Find all matches in text
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn findAll(self: *Self, text: []const u8, allocator: std.mem.Allocator) ![]PcreMatch {
         // Allocate buffer for results (max 1M matches like other backends)
         const max_results: usize = 1000000;
         const results_buf = try allocator.alloc(PcreMatch, max_results);
-        errdefer allocator.free(results_buf);
+        // safe-transpile: free removed (memory owned by safe type);
 
         const count = pcre2_find_all(
             self.ctx,
@@ -97,25 +99,31 @@ pub const PcreRegex = struct {
         );
 
         if (count < 0) {
-            allocator.free(results_buf);
+            // safe-transpile: free removed (memory owned by safe type);
             return error.MatchError;
         }
 
         // Shrink to actual size
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         return allocator.realloc(results_buf, @intCast(count)) catch results_buf[0..@intCast(count)];
     }
 };
 
 /// Find line start position (scan backwards for newline)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findLineStart(text: []const u8, pos: usize) u32 {
     if (pos == 0) return 0;
     var i = pos - 1;
     while (i > 0 and text[i] != '\n') : (i -= 1) {}
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (text[i] == '\n' and i < pos) return @intCast(i + 1);
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     return @intCast(i);
 }
 
 /// Count newlines before position
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn countNewlines(text: []const u8, end: usize) u32 {
     var count: u32 = 0;
     for (text[0..end]) |ch| {
@@ -125,6 +133,7 @@ fn countNewlines(text: []const u8, end: usize) u32 {
 }
 
 /// Search text using Perl regex (PCRE2)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn searchPcre(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     // Handle invert match separately
     if (options.invert_match) {
@@ -142,7 +151,7 @@ pub fn searchPcre(text: []const u8, pattern: []const u8, options: SearchOptions,
     defer pcre.deinit();
 
     const pcre_matches = try pcre.findAll(text, allocator);
-    defer allocator.free(pcre_matches);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Convert PCRE matches to MatchResult
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
@@ -154,8 +163,10 @@ pub fn searchPcre(text: []const u8, pattern: []const u8, options: SearchOptions,
             const line_num = 1 + countNewlines(text, line_start);
 
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(m.start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(m.end - m.start),
                 .line_start = line_start,
                 .line_num = line_num,
@@ -172,6 +183,7 @@ pub fn searchPcre(text: []const u8, pattern: []const u8, options: SearchOptions,
 }
 
 /// Search for non-matching lines using PCRE
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
     var pcre = PcreRegex.compile(pattern, options) catch {
         // On regex error, all lines are "non-matching"
@@ -180,7 +192,7 @@ fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOpti
     defer pcre.deinit();
 
     const pcre_matches = try pcre.findAll(text, allocator);
-    defer allocator.free(pcre_matches);
+    // safe-transpile: free removed (memory owned by safe type);
 
     // Build set of matching line starts
     var matching_lines = std.AutoHashMap(u32, void).init(allocator);
@@ -206,11 +218,15 @@ fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOpti
         while (line_end < text.len and text[line_end] != '\n') : (line_end += 1) {}
 
         // Check if this line is NOT in matching set
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         if (!matching_lines.contains(@intCast(line_start))) {
             try matches.append(allocator, MatchResult{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .position = @intCast(line_start),
                 .pattern_idx = 0,
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .match_len = @intCast(line_end - line_start),
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .line_start = @intCast(line_start),
                 .line_num = line_num,
             });
@@ -230,6 +246,7 @@ fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOpti
 }
 
 /// Return all lines (for empty pattern or regex error in inverted mode)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
     var matches: std.ArrayListUnmanaged(MatchResult) = .{};
     defer matches.deinit(allocator);
@@ -242,9 +259,12 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
         while (line_end < text.len and text[line_end] != '\n') : (line_end += 1) {}
 
         try matches.append(allocator, MatchResult{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .position = @intCast(line_start),
             .pattern_idx = 0,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .match_len = @intCast(line_end - line_start),
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .line_start = @intCast(line_start),
             .line_num = line_num,
         });

@@ -2,7 +2,6 @@ const std = @import("std");
 
 /// Regex engine supporting POSIX Extended Regular Expressions (ERE)
 /// Features: . * + ? | ^ $ () [] [^] {n,m} \d \w \s \b and backreferences
-
 pub const RegexError = error{
     InvalidPattern,
     UnmatchedParen,
@@ -34,6 +33,7 @@ pub const Regex = struct {
     anchored_start: bool,
     anchored_end: bool,
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8, options: Options) !Regex {
         var parser = Parser.init(allocator, pattern, options);
         defer parser.deinit();
@@ -45,16 +45,19 @@ pub const Regex = struct {
     }
 
     /// Check if the text matches the pattern anywhere
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn isMatch(self: *const Regex, text: []const u8) bool {
         return self.find(text) != null;
     }
 
     /// Find first match in text
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn find(self: *const Regex, text: []const u8) ?Match {
         return self.findAt(text, 0);
     }
 
     /// Find match starting at or after position
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn findAt(self: *const Regex, text: []const u8, start: usize) ?Match {
         if (self.anchored_start) {
             if (start == 0) {
@@ -74,6 +77,7 @@ pub const Regex = struct {
     }
 
     /// Try to match at exact position
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     fn matchAt(self: *const Regex, text: []const u8, pos: usize) ?Match {
         var executor = NFAExecutor.init(self.allocator, &self.nfa, self.num_groups) catch return null;
         defer executor.deinit();
@@ -131,12 +135,12 @@ const State = struct {
 
 const NFA = struct {
     start: *State,
-    states: std.ArrayList(*State),
+    states: safe.ArrayList(*State),
 
     fn deinit(self: *NFA, allocator: std.mem.Allocator) void {
         for (self.states.items) |state| {
             if (state.type == .char_class) {
-                allocator.free(state.data.char_class.ranges);
+                // safe-transpile: free removed (memory owned by safe type);
             }
             allocator.destroy(state);
         }
@@ -149,16 +153,17 @@ const Parser = struct {
     pattern: []const u8,
     pos: usize,
     options: Regex.Options,
-    states: std.ArrayList(*State),
+    states: safe.ArrayList(*State),
     group_count: usize,
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     fn init(allocator: std.mem.Allocator, pattern: []const u8, options: Regex.Options) Parser {
         return .{
             .allocator = allocator,
             .pattern = pattern,
             .pos = 0,
             .options = options,
-            .states = std.ArrayList(*State).init(allocator),
+            .states = safe.ArrayList(*State).init(allocator),
             .group_count = 0,
         };
     }
@@ -375,7 +380,7 @@ const Parser = struct {
             self.pos += 1;
         }
 
-        var ranges = std.ArrayList(State.Range).init(self.allocator);
+        var ranges = safe.ArrayList(State.Range).init(self.allocator);
         defer ranges.deinit();
 
         while (self.pos < self.pattern.len and self.pattern[self.pos] != ']') {
@@ -602,8 +607,8 @@ const Parser = struct {
     }
 
     fn createState(self: *Parser, state_type: StateType) !*State {
-        const state = try self.allocator.create(State);
-        state.* = .{
+        const state = try safe.Box(State).init(allocator, undefined);
+        state[0] = .{
             .type = state_type,
             .data = .{ .none = {} },
             .out = null,
@@ -634,8 +639,8 @@ const Parser = struct {
 const NFAExecutor = struct {
     allocator: std.mem.Allocator,
     nfa: *const NFA,
-    current: std.ArrayList(*const State),
-    next: std.ArrayList(*const State),
+    current: safe.ArrayList(*const State),
+    next: safe.ArrayList(*const State),
     groups: []?Match.Group,
     num_groups: usize,
 
@@ -646,8 +651,8 @@ const NFAExecutor = struct {
         return .{
             .allocator = allocator,
             .nfa = nfa,
-            .current = std.ArrayList(*const State).init(allocator),
-            .next = std.ArrayList(*const State).init(allocator),
+            .current = safe.ArrayList(*const State).init(allocator),
+            .next = safe.ArrayList(*const State).init(allocator),
             .groups = groups,
             .num_groups = num_groups,
         };
@@ -656,9 +661,10 @@ const NFAExecutor = struct {
     fn deinit(self: *NFAExecutor) void {
         self.current.deinit();
         self.next.deinit();
-        self.allocator.free(self.groups);
+        // safe-transpile: free removed (memory owned by safe type);
     }
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     fn execute(self: *NFAExecutor, text: []const u8, start: usize, anchored_end: bool) ?Match {
         self.current.clearRetainingCapacity();
         self.addState(self.nfa.start, start) catch return null;
@@ -706,6 +712,7 @@ const NFAExecutor = struct {
         return last_match;
     }
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     fn matchState(self: *NFAExecutor, state: *const State, text: []const u8, pos: usize, c: u8) bool {
         _ = self;
         switch (state.type) {
@@ -800,6 +807,7 @@ const NFAExecutor = struct {
 };
 
 /// Check if a pattern contains regex metacharacters
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn isRegexPattern(pattern: []const u8) bool {
     var i: usize = 0;
     while (i < pattern.len) {
