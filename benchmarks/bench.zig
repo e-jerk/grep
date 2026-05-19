@@ -6,13 +6,18 @@ const cpu_gnu = @import("cpu_gnu");
 
 const SearchOptions = gpu.SearchOptions;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    while (args_iter.next()) |arg| {
+        try args.append(allocator, arg);
+    }
+    const args_slice = args.items;
 
     // Default parameters
     var file_size: usize = 10 * 1024 * 1024; // 10MB
@@ -21,16 +26,16 @@ pub fn main() !void {
 
     // Parse arguments
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--size") and i + 1 < args.len) {
+    while (i < args_slice.len) : (i += 1) {
+        if (std.mem.eql(u8, args_slice[i], "--size") and i + 1 < args_slice.len) {
             i += 1;
-            file_size = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, args[i], "--pattern") and i + 1 < args.len) {
+            file_size = try std.fmt.parseInt(usize, args_slice[i], 10);
+        } else if (std.mem.eql(u8, args_slice[i], "--pattern") and i + 1 < args_slice.len) {
             i += 1;
-            pattern = args[i];
-        } else if (std.mem.eql(u8, args[i], "--iterations") and i + 1 < args.len) {
+            pattern = args_slice[i];
+        } else if (std.mem.eql(u8, args_slice[i], "--iterations") and i + 1 < args_slice.len) {
             i += 1;
-            iterations = try std.fmt.parseInt(usize, args[i], 10);
+            iterations = try std.fmt.parseInt(usize, args_slice[i], 10);
         }
     }
 
@@ -42,7 +47,7 @@ pub fn main() !void {
 
     // Generate test data (English-like text)
     std.debug.print("Generating test data...\n", .{});
-    const text = try generateTestData(allocator, file_size);
+    const text = try generateTestData(io, allocator, file_size);
     defer allocator.free(text);
 
     const options = SearchOptions{};
@@ -55,22 +60,22 @@ pub fn main() !void {
 
     // Benchmark CPU (Optimized)
     std.debug.print("Benchmarking CPU (Optimized)...\n", .{});
-    const cpu_stats = try benchmarkCpu(allocator, text, pattern, options, iterations);
+    const cpu_stats = try benchmarkCpu(io, allocator, text, pattern, options, iterations);
 
     // Benchmark CPU (GNU)
     std.debug.print("Benchmarking CPU (GNU)...\n", .{});
-    const cpu_gnu_stats = try benchmarkCpuGnu(allocator, text, pattern, options, iterations);
+    const cpu_gnu_stats = try benchmarkCpuGnu(io, allocator, text, pattern, options, iterations);
 
     // Benchmark Metal (macOS only)
     var metal_stats: ?BenchStats = null;
     if (build_options.is_macos) {
         std.debug.print("Benchmarking Metal...\n", .{});
-        metal_stats = try benchmarkMetal(allocator, text, pattern, options, iterations);
+        metal_stats = try benchmarkMetal(io, allocator, text, pattern, options, iterations);
     }
 
     // Benchmark Vulkan
     std.debug.print("Benchmarking Vulkan...\n", .{});
-    const vulkan_stats = try benchmarkVulkan(allocator, text, pattern, options, iterations);
+    const vulkan_stats = try benchmarkVulkan(io, allocator, text, pattern, options, iterations);
 
     // Print results
     std.debug.print("\n====== RESULTS ======\n\n", .{});
@@ -105,15 +110,15 @@ const BenchStats = struct {
     matches: u64,
 };
 
-fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
+fn benchmarkCpu(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
     var total_time: i64 = 0;
     var min_time: i64 = std.math.maxInt(i64);
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = try cpu.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
 
         matches = result.total_matches;
         result.deinit();
@@ -133,18 +138,18 @@ fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const
     };
 }
 
-fn benchmarkCpuGnu(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
+fn benchmarkCpuGnu(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
     var total_time: i64 = 0;
     var min_time: i64 = std.math.maxInt(i64);
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = cpu_gnu.search(text, pattern, options, allocator) catch |err| {
             std.debug.print("GNU search failed: {}\n", .{err});
             return null;
         };
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
 
         matches = result.total_matches;
         result.deinit();
@@ -164,7 +169,7 @@ fn benchmarkCpuGnu(allocator: std.mem.Allocator, text: []const u8, pattern: []co
     };
 }
 
-fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
+fn benchmarkMetal(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
     if (!build_options.is_macos) return null;
 
     const searcher = gpu.metal.MetalSearcher.init(allocator) catch |err| {
@@ -178,9 +183,9 @@ fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []con
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = try searcher.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
 
         matches = result.total_matches;
         result.deinit();
@@ -200,7 +205,7 @@ fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []con
     };
 }
 
-fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
+fn benchmarkVulkan(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !?BenchStats {
     const searcher = gpu.vulkan.VulkanSearcher.init(allocator) catch |err| {
         std.debug.print("Vulkan init failed: {}\n", .{err});
         return null;
@@ -212,9 +217,9 @@ fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []co
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = try searcher.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
 
         matches = result.total_matches;
         result.deinit();
@@ -287,7 +292,7 @@ fn verifyCorrectness(allocator: std.mem.Allocator, text: []const u8, pattern: []
     }
 }
 
-fn generateTestData(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateTestData(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const words = [_][]const u8{
         "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
         "lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing",
@@ -296,7 +301,7 @@ fn generateTestData(allocator: std.mem.Allocator, size: usize) ![]u8 {
     };
 
     var text = try allocator.alloc(u8, size);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Timestamp.now(io, .real).toSeconds()));
     const random = prng.random();
 
     var pos: usize = 0;

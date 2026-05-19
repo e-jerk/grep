@@ -154,7 +154,7 @@ pub fn searchPcre(text: []const u8, pattern: []const u8, options: SearchOptions,
     // safe-transpile: free removed (memory owned by safe type);
 
     // Convert PCRE matches to MatchResult
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     for (pcre_matches) |m| {
@@ -206,7 +206,7 @@ fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOpti
     }
 
     // Find non-matching lines
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var line_start: usize = 0;
@@ -248,7 +248,7 @@ fn searchPcreInverted(text: []const u8, pattern: []const u8, options: SearchOpti
 /// Return all lines (for empty pattern or regex error in inverted mode)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var line_start: usize = 0;

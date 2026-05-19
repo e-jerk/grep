@@ -24,17 +24,22 @@ const TestCase = struct {
     name: []const u8,
     pattern: []const u8,
     options: SearchOptions,
-    data_generator: *const fn (std.mem.Allocator, usize) anyerror![]u8,
+    data_generator: *const fn (std.Io, std.mem.Allocator, usize) anyerror![]u8,
     expected_match_ratio: f64, // Expected ratio of matches to total positions
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    while (args_iter.next()) |arg| {
+        try args.append(allocator, arg);
+    }
+    const args_slice = args.items;
 
     // Default test size: 50MB for thorough testing
     var test_size: usize = 50 * 1024 * 1024;
@@ -42,13 +47,13 @@ pub fn main() !void {
 
     // Parse arguments
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--size") and i + 1 < args.len) {
+    while (i < args_slice.len) : (i += 1) {
+        if (std.mem.eql(u8, args_slice[i], "--size") and i + 1 < args_slice.len) {
             i += 1;
-            test_size = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, args[i], "--iterations") and i + 1 < args.len) {
+            test_size = try std.fmt.parseInt(usize, args_slice[i], 10);
+        } else if (std.mem.eql(u8, args_slice[i], "--iterations") and i + 1 < args_slice.len) {
             i += 1;
-            iterations = try std.fmt.parseInt(usize, args[i], 10);
+            iterations = try std.fmt.parseInt(usize, args_slice[i], 10);
         }
     }
 
@@ -173,10 +178,10 @@ pub fn main() !void {
         });
         std.debug.print("-" ** 70 ++ "\n", .{});
 
-        const text = try tc.data_generator(allocator, test_size);
+        const text = try tc.data_generator(io, allocator, test_size);
         defer allocator.free(text);
 
-        results[test_idx] = try runTest(allocator, tc.name, text, tc.pattern, tc.options, iterations);
+        results[test_idx] = try runTest(io, allocator, tc.name, text, tc.pattern, tc.options, iterations);
 
         if (!results[test_idx].passed) all_passed = false;
 
@@ -254,7 +259,7 @@ pub fn main() !void {
     std.debug.print("  Verifying hardware-detected defaults produce optimal results\n", .{});
     std.debug.print("=" ** 70 ++ "\n\n", .{});
 
-    const threshold_passed = try runThresholdTests(allocator, test_size, iterations);
+    const threshold_passed = try runThresholdTests(io, allocator, test_size, iterations);
     if (!threshold_passed) all_passed = false;
 
     if (all_passed) {
@@ -273,9 +278,9 @@ const ThresholdConfig = struct {
 };
 
 /// Run threshold tests comparing different configurations
-fn runThresholdTests(allocator: std.mem.Allocator, test_size: usize, iterations: usize) !bool {
+fn runThresholdTests(io: std.Io, allocator: std.mem.Allocator, test_size: usize, iterations: usize) !bool {
     // Generate test data
-    const text = try generateEnglishText(allocator, test_size);
+    const text = try generateEnglishText(io, allocator, test_size);
     defer allocator.free(text);
 
     // Detect hardware capabilities
@@ -352,20 +357,20 @@ fn runThresholdTests(allocator: std.mem.Allocator, test_size: usize, iterations:
             // Run benchmark with appropriate backend
             const throughput = if (would_use_gpu) blk: {
                 if (build_options.is_macos) {
-                    if (benchmarkMetal(allocator, text, tp.pattern, tp.options, iterations)) |stats| {
+                    if (benchmarkMetal(io, allocator, text, tp.pattern, tp.options, iterations)) |stats| {
                         break :blk stats.throughput_mbs;
                     } else |_| {
                         break :blk @as(f64, 0);
                     }
                 } else {
-                    if (benchmarkVulkan(allocator, text, tp.pattern, tp.options, iterations)) |stats| {
+                    if (benchmarkVulkan(io, allocator, text, tp.pattern, tp.options, iterations)) |stats| {
                         break :blk stats.throughput_mbs;
                     } else |_| {
                         break :blk @as(f64, 0);
                     }
                 }
             } else blk: {
-                const stats = try benchmarkCpu(allocator, text, tp.pattern, tp.options, iterations);
+                const stats = try benchmarkCpu(io, allocator, text, tp.pattern, tp.options, iterations);
                 break :blk stats.throughput_mbs;
             };
 
@@ -418,7 +423,7 @@ fn runThresholdTests(allocator: std.mem.Allocator, test_size: usize, iterations:
     }
 }
 
-fn runTest(allocator: std.mem.Allocator, name: []const u8, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !TestResult {
+fn runTest(io: std.Io, allocator: std.mem.Allocator, name: []const u8, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !TestResult {
     var result = TestResult{
         .name = name,
         .passed = true,
@@ -433,7 +438,7 @@ fn runTest(allocator: std.mem.Allocator, name: []const u8, text: []const u8, pat
 
     // Run CPU benchmark
     std.debug.print("  CPU benchmark...\n", .{});
-    const cpu_stats = try benchmarkCpu(allocator, text, pattern, options, iterations);
+    const cpu_stats = try benchmarkCpu(io, allocator, text, pattern, options, iterations);
     result.cpu_throughput_mbs = cpu_stats.throughput_mbs;
     result.cpu_matches = cpu_stats.matches;
     result.expected_matches = cpu_stats.matches;
@@ -442,7 +447,7 @@ fn runTest(allocator: std.mem.Allocator, name: []const u8, text: []const u8, pat
     // Run Metal benchmark (macOS only)
     if (build_options.is_macos) {
         std.debug.print("  Metal benchmark...\n", .{});
-        if (benchmarkMetal(allocator, text, pattern, options, iterations)) |metal_stats| {
+        if (benchmarkMetal(io, allocator, text, pattern, options, iterations)) |metal_stats| {
             result.metal_throughput_mbs = metal_stats.throughput_mbs;
             result.metal_matches = metal_stats.matches;
             std.debug.print("    Throughput: {d:.1} MB/s, Matches: {d}\n", .{ metal_stats.throughput_mbs, metal_stats.matches });
@@ -459,7 +464,7 @@ fn runTest(allocator: std.mem.Allocator, name: []const u8, text: []const u8, pat
 
     // Run Vulkan benchmark
     std.debug.print("  Vulkan benchmark...\n", .{});
-    if (benchmarkVulkan(allocator, text, pattern, options, iterations)) |vulkan_stats| {
+    if (benchmarkVulkan(io, allocator, text, pattern, options, iterations)) |vulkan_stats| {
         result.vulkan_throughput_mbs = vulkan_stats.throughput_mbs;
         result.vulkan_matches = vulkan_stats.matches;
         std.debug.print("    Throughput: {d:.1} MB/s, Matches: {d}\n", .{ vulkan_stats.throughput_mbs, vulkan_stats.matches });
@@ -481,7 +486,7 @@ const BenchStats = struct {
     matches: u64,
 };
 
-fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
+fn benchmarkCpu(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
     var total_time: i64 = 0;
     var matches: u64 = 0;
 
@@ -489,12 +494,12 @@ fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const
     const use_regex = options.perl or !options.fixed_string;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = if (use_regex)
             try cpu.searchRegex(text, pattern, options, allocator)
         else
             try cpu.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -506,7 +511,7 @@ fn benchmarkCpu(allocator: std.mem.Allocator, text: []const u8, pattern: []const
     return BenchStats{ .throughput_mbs = throughput, .matches = matches };
 }
 
-fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
+fn benchmarkMetal(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
     if (!build_options.is_macos) return error.NotAvailable;
 
     const searcher = gpu.metal.MetalSearcher.init(allocator) catch return error.InitFailed;
@@ -519,12 +524,12 @@ fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []con
     const use_regex = options.perl or !options.fixed_string;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = if (use_regex)
             try searcher.searchRegex(text, pattern, options, allocator)
         else
             try searcher.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -536,7 +541,7 @@ fn benchmarkMetal(allocator: std.mem.Allocator, text: []const u8, pattern: []con
     return BenchStats{ .throughput_mbs = throughput, .matches = matches };
 }
 
-fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
+fn benchmarkVulkan(io: std.Io, allocator: std.mem.Allocator, text: []const u8, pattern: []const u8, options: SearchOptions, iterations: usize) !BenchStats {
     const searcher = gpu.vulkan.VulkanSearcher.init(allocator) catch return error.InitFailed;
     defer searcher.deinit();
 
@@ -547,12 +552,12 @@ fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []co
     const use_regex = options.perl or !options.fixed_string;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
         var result = if (use_regex)
             try searcher.searchRegex(text, pattern, options, allocator)
         else
             try searcher.search(text, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io).raw.toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -566,7 +571,7 @@ fn benchmarkVulkan(allocator: std.mem.Allocator, text: []const u8, pattern: []co
 
 // Data generators based on real-world use cases from grep tests
 
-fn generateEnglishText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateEnglishText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const words = [_][]const u8{
         "the", "be", "to", "of", "and", "a", "in", "that", "have", "I",
         "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
@@ -577,10 +582,10 @@ fn generateEnglishText(allocator: std.mem.Allocator, size: usize) ![]u8 {
         "people", "into", "year", "your", "good", "some", "could", "them", "see", "other",
         "than", "then", "now", "look", "only", "come", "its", "over", "think", "also",
     };
-    return generateWordList(allocator, size, &words);
+    return generateWordList(io, allocator, size, &words);
 }
 
-fn generateMixedCaseText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateMixedCaseText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const words = [_][]const u8{
         "The", "THE", "the", "Be", "BE", "be", "To", "TO", "to",
         "Of", "OF", "of", "And", "AND", "and", "In", "IN", "in",
@@ -588,10 +593,10 @@ fn generateMixedCaseText(allocator: std.mem.Allocator, size: usize) ![]u8 {
         "With", "WITH", "with", "This", "THIS", "this", "From", "FROM", "from",
         "They", "THEY", "they", "Will", "WILL", "will", "What", "WHAT", "what",
     };
-    return generateWordList(allocator, size, &words);
+    return generateWordList(io, allocator, size, &words);
 }
 
-fn generateCodeLikeText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateCodeLikeText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const words = [_][]const u8{
         "function", "const", "let", "var", "if", "else", "for", "while", "return",
         "class", "struct", "enum", "import", "export", "public", "private", "static",
@@ -600,10 +605,10 @@ fn generateCodeLikeText(allocator: std.mem.Allocator, size: usize) ![]u8 {
         "error", "warning", "debug", "info", "log", "print", "println", "printf",
         "async", "await", "promise", "callback", "handler", "listener", "event",
     };
-    return generateWordList(allocator, size, &words);
+    return generateWordList(io, allocator, size, &words);
 }
 
-fn generateTechText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateTechText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const words = [_][]const u8{
         "performance", "benchmark", "throughput", "latency", "bandwidth", "memory",
         "optimization", "algorithm", "structure", "data", "process", "thread",
@@ -612,10 +617,10 @@ fn generateTechText(allocator: std.mem.Allocator, size: usize) ![]u8 {
         "compiler", "runtime", "execution", "instruction", "register", "cpu", "gpu",
         "shader", "compute", "kernel", "dispatch", "workgroup", "thread", "barrier",
     };
-    return generateWordList(allocator, size, &words);
+    return generateWordList(io, allocator, size, &words);
 }
 
-fn generateLogFile(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateLogFile(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     const prefixes = [_][]const u8{
         "[INFO]", "[DEBUG]", "[WARN]", "[ERROR]", "[TRACE]", "[FATAL]",
     };
@@ -635,7 +640,7 @@ fn generateLogFile(allocator: std.mem.Allocator, size: usize) ![]u8 {
     };
 
     var text = try allocator.alloc(u8, size);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Timestamp.now(io, .real).toSeconds()));
     const random = prng.random();
 
     var pos: usize = 0;
@@ -668,9 +673,9 @@ fn generateLogFile(allocator: std.mem.Allocator, size: usize) ![]u8 {
     return text;
 }
 
-fn generateSparseMatchText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateSparseMatchText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     var text = try allocator.alloc(u8, size);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Timestamp.now(io, .real).toSeconds()));
     const random = prng.random();
 
     // Fill with random lowercase letters and spaces
@@ -696,9 +701,9 @@ fn generateSparseMatchText(allocator: std.mem.Allocator, size: usize) ![]u8 {
     return text;
 }
 
-fn generateWordList(allocator: std.mem.Allocator, size: usize, words: []const []const u8) ![]u8 {
+fn generateWordList(io: std.Io, allocator: std.mem.Allocator, size: usize, words: []const []const u8) ![]u8 {
     var text = try allocator.alloc(u8, size);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Timestamp.now(io, .real).toSeconds()));
     const random = prng.random();
 
     var pos: usize = 0;
@@ -722,20 +727,20 @@ fn generateWordList(allocator: std.mem.Allocator, size: usize, words: []const []
     return text;
 }
 
-fn generateLookaheadText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateLookaheadText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     // Generate text with "foobar" and "foobaz" patterns for lookahead tests
     const patterns = [_][]const u8{
         "foobar", "foobaz", "fooqux", "barfoo", "bazfoo", "hello", "world",
         "test", "data", "value", "string", "number", "buffer", "array",
     };
-    return generateWordList(allocator, size, &patterns);
+    return generateWordList(io, allocator, size, &patterns);
 }
 
-fn generateLookbehindText(allocator: std.mem.Allocator, size: usize) ![]u8 {
+fn generateLookbehindText(io: std.Io, allocator: std.mem.Allocator, size: usize) ![]u8 {
     // Generate text with "foobar" and "bazbar" patterns for lookbehind tests
     const patterns = [_][]const u8{
         "foobar", "bazbar", "xyzbar", "barfoo", "barbaz", "hello", "world",
         "test", "data", "value", "string", "number", "buffer", "array",
     };
-    return generateWordList(allocator, size, &patterns);
+    return generateWordList(io, allocator, size, &patterns);
 }

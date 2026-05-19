@@ -606,7 +606,7 @@ pub const VulkanSearcher = struct {
         if (gpu_regex.bitmaps.len > 0) {
             const bitmaps_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(bitmaps_buffer.mapped));
-            safe.SimdUtils.copy(bitmaps_ptr[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+            @memcpy(bitmaps_ptr[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
         }
 
         // Upload config
@@ -636,8 +636,8 @@ pub const VulkanSearcher = struct {
         header_ptr[3] = gpu_regex.header.flags;
 
         // Upload line data
-        safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(line_offsets_buffer.mapped)))[0..num_lines], line_offsets_slice);
-        safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(line_lengths_buffer.mapped)))[0..num_lines], line_lengths_slice);
+        @memcpy(@as([*]u32, @ptrCast(@alignCast(line_offsets_buffer.mapped)))[0..num_lines], line_offsets_slice);
+        @memcpy(@as([*]u32, @ptrCast(@alignCast(line_lengths_buffer.mapped)))[0..num_lines], line_lengths_slice);
 
         // Zero counters
         const counters_ptr: *[2]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed

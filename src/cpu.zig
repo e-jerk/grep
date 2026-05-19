@@ -38,7 +38,7 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
 
     const skip_table = gpu.buildSkipTable(pattern, options.case_insensitive);
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var pos: usize = 0;
@@ -197,7 +197,7 @@ fn findLineStartSIMD(text: []const u8, pos: usize) usize {
 /// SIMD-optimized search for all lines (empty pattern)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -267,7 +267,7 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
 /// Search for lines that don't contain the pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -423,7 +423,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
     };
     defer compiled.deinit();
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -465,7 +465,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
 /// Search for lines that don't match the regex pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(MatchResult) = .empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -534,7 +534,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
 fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    var result: std.ArrayListUnmanaged(u8) = .{};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     defer result.deinit(allocator);
 
     var i: usize = 0;
