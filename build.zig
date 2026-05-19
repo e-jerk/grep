@@ -28,7 +28,8 @@ pub fn build(b: *std.Build) void {
     const build_options_module = build_options.createModule();
 
     // Safe module for zust transpiled code
-    const safe_module = b.createModule(.{ .root_source_file = b.path("../zust/src/safe.zig") });
+    const zust_dep = b.dependency("zust", .{});
+    const safe_module = zust_dep.module("safe");
 
     // GNU grep dependency
     const gnu_grep = b.dependency("gnu_grep", .{});

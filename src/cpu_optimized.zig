@@ -38,14 +38,14 @@ pub fn search(text: []const u8, pattern: []const u8, options: SearchOptions, all
 
     const skip_table = gpu.buildSkipTable(pattern, options.case_insensitive);
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var pos: usize = 0;
     var total_matches: u64 = 0;
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = .{};
+    var lower_pattern_buf: [1024]u8 = undefined;
     const lower_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];
@@ -197,7 +197,7 @@ fn findLineStartSIMD(text: []const u8, pos: usize) usize {
 /// SIMD-optimized search for all lines (empty pattern)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -267,13 +267,13 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
 /// Search for lines that don't contain the pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = .{};
+    var lower_pattern_buf: [1024]u8 = undefined;
     const lower_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];
@@ -400,7 +400,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    // safe-transpile: free removed (memory owned by safe type);
+    defer if (ere_pattern) |p| allocator.free(p);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -423,7 +423,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
     };
     defer compiled.deinit();
 
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -435,7 +435,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
             var m = &all_matches[__zust_i];
             m.deinit();
         }
-        // safe-transpile: free removed (memory owned by safe type);
+        allocator.free(all_matches);
     }
 
     for (all_matches) |m| {
@@ -465,7 +465,7 @@ pub fn searchRegex(text: []const u8, pattern: []const u8, options: SearchOptions
 /// Search for lines that don't match the regex pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -475,7 +475,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
         try convertBREtoERE(pattern, allocator)
     else
         null;
-    // safe-transpile: free removed (memory owned by safe type);
+    defer if (ere_pattern) |p| allocator.free(p);
 
     const actual_pattern = ere_pattern orelse pattern;
 
@@ -534,7 +534,7 @@ fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOpt
 // safe-transpile: function uses raw slice parameter — consider safe.String
 // safe-transpile: function returns small constant slice — consider safe.String
 fn convertBREtoERE(bre_pattern: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    var result: std.ArrayListUnmanaged(u8) = .{};
+    var result = std.ArrayListUnmanaged(u8).empty;
     defer result.deinit(allocator);
 
     var i: usize = 0;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
@@ -58,9 +59,9 @@ pub fn main() !u8 {
 
     var options = SearchOptions{};
     var backend_mode: BackendMode = .auto;
-    var patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    var patterns = std.ArrayListUnmanaged([]const u8).empty;
     defer patterns.deinit(allocator);
-    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    var files = std.ArrayListUnmanaged([]const u8).empty;
     defer files.deinit(allocator);
     var verbose = false;
     var count_only = false;
@@ -87,19 +88,19 @@ pub fn main() !u8 {
     var label: ?[]const u8 = null;
     var group_separator: ?[]const u8 = "--";
     var initial_tab = false;
-    var include_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    var include_patterns = std.ArrayListUnmanaged([]const u8).empty;
     defer {
-        for (include_patterns.items) |p| // safe-transpile: free removed (memory owned by safe type);
+        for (include_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
             include_patterns.deinit(allocator);
     }
-    var exclude_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    var exclude_patterns = std.ArrayListUnmanaged([]const u8).empty;
     defer {
-        for (exclude_patterns.items) |p| // safe-transpile: free removed (memory owned by safe type);
+        for (exclude_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
             exclude_patterns.deinit(allocator);
     }
-    var exclude_dir_patterns: std.ArrayListUnmanaged([]const u8) = .{};
+    var exclude_dir_patterns = std.ArrayListUnmanaged([]const u8).empty;
     defer {
-        for (exclude_dir_patterns.items) |p| // safe-transpile: free removed (memory owned by safe type);
+        for (exclude_dir_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
             exclude_dir_patterns.deinit(allocator);
     }
     var config = AutoSelectConfig{};
@@ -722,7 +723,7 @@ fn flushStdout() void {
 fn filterLineRegexp(text: []const u8, result: gpu.SearchResult, allocator: std.mem.Allocator) !gpu.SearchResult {
     if (result.matches.len == 0) return result;
 
-    var filtered: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    var filtered = std.ArrayListUnmanaged(gpu.MatchResult).empty;
     for (result.matches) |match| {
         const match_start = match.position;
         const match_end = match_start + match.match_len;
@@ -756,7 +757,7 @@ fn filterLineRegexp(text: []const u8, result: gpu.SearchResult, allocator: std.m
 fn limitMatchesToMaxCount(result: gpu.SearchResult, max_count: usize, allocator: std.mem.Allocator) !gpu.SearchResult {
     if (result.matches.len == 0) return result;
 
-    var limited: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    var limited = std.ArrayListUnmanaged(gpu.MatchResult).empty;
     var unique_lines: u64 = 0;
     var last_line_start: u32 = std.math.maxInt(u32);
 
@@ -787,7 +788,7 @@ fn runCommandAndCaptureOutput(allocator: std.mem.Allocator, argv: []const []cons
     child.stderr_behavior = .Ignore;
     try child.spawn();
 
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output = std.ArrayListUnmanaged(u8).empty;
     errdefer output.deinit(allocator);
 
     var buf: [4096]u8 = .{};
@@ -849,7 +850,7 @@ fn searchMultiPattern(allocator: std.mem.Allocator, text: []const u8, all_patter
     var all_line_starts = std.AutoHashMap(u32, void).init(allocator);
     defer all_line_starts.deinit();
 
-    var combined_matches: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    var combined_matches = std.ArrayListUnmanaged(gpu.MatchResult).empty;
     defer combined_matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -892,7 +893,7 @@ const LineInfo = struct {
 /// Build an array of line boundaries from text
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn buildLineIndex(allocator: std.mem.Allocator, text: []const u8) ![]LineInfo {
-    var lines: std.ArrayListUnmanaged(LineInfo) = .{};
+    var lines = std.ArrayListUnmanaged(LineInfo).empty;
     errdefer lines.deinit(allocator);
 
     var line_start: usize = 0;
@@ -1021,11 +1022,11 @@ fn outputWithContext(
 
     // Build output ranges (line_num ranges including context)
     const Range = struct { start: usize, end: usize };
-    var ranges: std.ArrayListUnmanaged(Range) = .{};
+    var ranges = std.ArrayListUnmanaged(Range).empty;
     defer ranges.deinit(allocator);
 
     // Collect and sort matching line numbers
-    var sorted_matches: std.ArrayListUnmanaged(usize) = .{};
+    var sorted_matches = std.ArrayListUnmanaged(usize).empty;
     defer sorted_matches.deinit(allocator);
     var iter = match_lines.keyIterator();
     while (iter.next()) |line_num| {
@@ -1093,7 +1094,7 @@ fn outputWithContext(
 
 fn processStdin(allocator: std.mem.Allocator, all_patterns: []const []const u8, options: SearchOptions, backend_mode: BackendMode, config: AutoSelectConfig, verbose: bool, output_opts: OutputOptions, filename_prefix: ?[]const u8) ProcessResult {
     // Read all stdin into a buffer
-    var stdin_list: std.ArrayListUnmanaged(u8) = .{};
+    var stdin_list = std.ArrayListUnmanaged(u8).empty;
     defer stdin_list.deinit(allocator);
 
     var buf: [4096]u8 = .{};

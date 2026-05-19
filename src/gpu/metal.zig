@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const mtl = @import("zig-metal");
 const mod = @import("mod.zig");
 const regex_compiler = @import("regex_compiler.zig");
@@ -86,7 +87,7 @@ pub const MetalSearcher = struct {
         };
 
         const self = try safe.Box(Self).init(allocator, undefined);
-        self[0] = Self{
+        self.ptr.* = Self{
             .device = device,
             .command_queue = command_queue,
             .bmh_pipeline = bmh_pipeline,
@@ -95,7 +96,7 @@ pub const MetalSearcher = struct {
             .threads_per_group = threads_to_use,
             .capabilities = capabilities,
         };
-        return self;
+        return self.ptr;
     }
 
     pub fn deinit(self: *Self) void {
@@ -172,7 +173,7 @@ pub const MetalSearcher = struct {
         if (config_buffer.contents()) |ptr| {
             const config_ptr: *SearchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            config_ptr[0] = SearchConfig{
+            config_ptr.* = SearchConfig{
                 // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .text_len = @intCast(text.len),
                 // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
@@ -213,7 +214,7 @@ pub const MetalSearcher = struct {
         if (num_to_copy > 0) {
             const results_ptr: [*]MatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(results_buffer.contents()));
-            safe.SimdUtils.copy(matches, results_ptr[0..num_to_copy]);
+            @memcpy(matches, results_ptr[0..num_to_copy]);
         }
 
         return SearchResult{ .matches = matches, .total_matches = total_matches, .allocator = allocator };
@@ -231,9 +232,9 @@ pub const MetalSearcher = struct {
         defer gpu_regex.deinit();
 
         // Find line boundaries
-        var line_offsets: std.ArrayListUnmanaged(u32) = .{};
+        var line_offsets = std.ArrayListUnmanaged(u32).empty;
         defer line_offsets.deinit(allocator);
-        var line_lengths: std.ArrayListUnmanaged(u32) = .{};
+        var line_lengths = std.ArrayListUnmanaged(u32).empty;
         defer line_lengths.deinit(allocator);
 
         var line_start: usize = 0;
@@ -278,7 +279,7 @@ pub const MetalSearcher = struct {
             if (states_buffer.contents()) |ptr| {
                 const dst: [*]RegexState = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(@alignCast(ptr));
-                safe.SimdUtils.copy(dst[0..gpu_regex.states.len], gpu_regex.states);
+                @memcpy(dst[0..gpu_regex.states.len], gpu_regex.states);
             }
         }
 
@@ -290,7 +291,7 @@ pub const MetalSearcher = struct {
             if (bitmaps_buffer.contents()) |ptr| {
                 const dst: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(@alignCast(ptr));
-                safe.SimdUtils.copy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
+                @memcpy(dst[0..gpu_regex.bitmaps.len], gpu_regex.bitmaps);
             }
         }
 
@@ -338,13 +339,13 @@ pub const MetalSearcher = struct {
         var line_offsets_buffer = self.device.newBufferWithLengthOptions(line_offsets.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_offsets_buffer.release();
         if (line_offsets_buffer.contents()) |ptr| {
-            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_offsets.items.len], line_offsets.items);
         }
 
         var line_lengths_buffer = self.device.newBufferWithLengthOptions(line_lengths.items.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer line_lengths_buffer.release();
         if (line_lengths_buffer.contents()) |ptr| {
-            safe.SimdUtils.copy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
+            @memcpy(@as([*]u32, @ptrCast(@alignCast(ptr)))[0..line_lengths.items.len], line_lengths.items);
         }
 
         // Execute regex matching in batches (Metal max grid width is 65536)

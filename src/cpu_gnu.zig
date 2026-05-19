@@ -76,7 +76,7 @@ inline fn isWordChar(c: u8) bool {
 /// Search for all lines (empty pattern)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -118,7 +118,7 @@ fn searchAllLines(text: []const u8, allocator: std.mem.Allocator) !SearchResult 
 /// Search for lines that don't contain the pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;
@@ -167,7 +167,7 @@ fn searchInverted(text: []const u8, pattern: []const u8, options: SearchOptions,
 /// Search for lines that don't match the regex pattern (for -v/--invert-match)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn searchRegexInverted(text: []const u8, pattern: []const u8, options: SearchOptions, allocator: std.mem.Allocator) !SearchResult {
-    var matches: std.ArrayListUnmanaged(MatchResult) = .{};
+    var matches = std.ArrayListUnmanaged(MatchResult).empty;
     defer matches.deinit(allocator);
 
     var total_matches: u64 = 0;

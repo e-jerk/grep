@@ -594,7 +594,7 @@ test "metal: PCRE positive lookahead" {
     defer searcher.deinit();
 
     // Generate enough data to trigger GPU execution
-    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    var text_builder = std.ArrayListUnmanaged(u8).empty;
     defer text_builder.deinit(allocator);
 
     // 1000 lines of "foobar" and 1000 lines of "foobaz"
@@ -621,7 +621,7 @@ test "metal: PCRE negative lookahead" {
     };
     defer searcher.deinit();
 
-    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    var text_builder = std.ArrayListUnmanaged(u8).empty;
     defer text_builder.deinit(allocator);
 
     for (0..1000) |_| {
@@ -647,7 +647,7 @@ test "metal: PCRE positive lookbehind" {
     };
     defer searcher.deinit();
 
-    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    var text_builder = std.ArrayListUnmanaged(u8).empty;
     defer text_builder.deinit(allocator);
 
     for (0..1000) |_| {
@@ -673,7 +673,7 @@ test "metal: PCRE negative lookbehind" {
     };
     defer searcher.deinit();
 
-    var text_builder: std.ArrayListUnmanaged(u8) = .{};
+    var text_builder = std.ArrayListUnmanaged(u8).empty;
     defer text_builder.deinit(allocator);
 
     for (0..1000) |_| {
