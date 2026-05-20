@@ -104,20 +104,11 @@ pub fn main(init: std.process.Init) !u8 {
     var group_separator: ?[]const u8 = "--";
     var initial_tab = false;
     var include_patterns = std.ArrayListUnmanaged([]const u8).empty;
-    defer {
-        for (include_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
-            include_patterns.deinit(allocator);
-    }
+    defer include_patterns.deinit(allocator);
     var exclude_patterns = std.ArrayListUnmanaged([]const u8).empty;
-    defer {
-        for (exclude_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
-            exclude_patterns.deinit(allocator);
-    }
+    defer exclude_patterns.deinit(allocator);
     var exclude_dir_patterns = std.ArrayListUnmanaged([]const u8).empty;
-    defer {
-        for (exclude_dir_patterns.items) |_| // safe-transpile: free removed (memory owned by safe type);
-            exclude_dir_patterns.deinit(allocator);
-    }
+    defer exclude_dir_patterns.deinit(allocator);
     var config = AutoSelectConfig{};
 
     // Parse arguments
