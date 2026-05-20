@@ -1124,6 +1124,7 @@ fn processStdin(io: std.Io, allocator: std.mem.Allocator, all_patterns: []const 
         var stdin_file = std.Io.File.stdin();
         const bytes_read = stdin_file.readStreaming(io, &[_][]u8{&buf}) catch |err| {
             if (err == error.WouldBlock) continue;
+            if (err == error.EndOfStream) break;
             if (!output_opts.suppress_messages) std.debug.print("grep: error reading stdin: {}\n", .{err});
             return .{ .found = false, .had_error = true };
         };
